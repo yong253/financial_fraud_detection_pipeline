@@ -1,0 +1,37 @@
+# 시크릿 / 환경변수
+.env
+credentials/
+*.json
+!dbt/profiles.yml
+
+# 데이터 (대용량)
+data/raw/
+data/*.csv
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+dist/
+build/
+
+# IDE
+.idea/
+.vscode/
+*.iml
+
+# Claude Code
+.claude/
+
+# Spark / Airflow
+spark-warehouse/
+airflow/logs/
+airflow/plugins/
+airflow.db
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
