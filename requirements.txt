@@ -1,0 +1,20 @@
+# ===== Kafka (confluent-kafka: 멱등 Producer enable.idempotence 지원) =====
+confluent-kafka==2.5.3
+
+# ===== 데이터 처리 =====
+pandas==2.2.2
+
+# ===== Spark (PySpark — job 작성용. 실제 실행은 Docker 컨테이너에서) =====
+pyspark==3.5.1
+
+# ===== 환경변수 =====
+python-dotenv==1.0.1
+
+# ===== 웨어하우스 / DBT (로컬은 DuckDB, GCP 전환 시 dbt-bigquery 추가) =====
+dbt-core==1.8.7
+dbt-duckdb==1.8.4
+duckdb==1.1.0
+
+# ===== 개발 / 테스트 =====
+pytest==8.3.2
+ruff==0.6.4

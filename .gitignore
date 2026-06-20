@@ -32,6 +32,11 @@ airflow/plugins/
 airflow.db
 *.log
 
+# Data Lake (로컬 GCS 대체재) / 체크포인트 / DuckDB
+datalake/
+checkpoints/
+*.duckdb
+
 # OS
 .DS_Store
 Thumbs.db

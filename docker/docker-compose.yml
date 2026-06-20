@@ -1,0 +1,196 @@
+# ============================================================
+#  Kafka 스택 — 3-브로커 KRaft 클러스터 (금융 데이터 정합성)
+#  실행:  docker compose -f docker/docker-compose.yml up -d
+#  확인:  http://localhost:8080  (Kafka UI 에서 브로커 3개 + transactions 토픽)
+#
+#  정합성 설정:
+#   - RF=3, min.insync.replicas=2  → 브로커 1대 장애에도 무손실 + 쓰기 지속
+#   - unclean.leader.election=false → stale 복제본 리더 승격 차단(커밋분 무손실)
+#   - restart=unless-stopped        → 브로커 down 시 자동 회복
+#   - named volume                  → 재시작해도 데이터 영속
+#  Spark / Airflow / Prometheus / Grafana 는 이후 단계에서 추가
+# ============================================================
+
+name: fraud-pipeline
+
+# 3노드 공통 환경변수 (YAML 앵커로 중복 제거)
+x-kafka-common: &kafka-common
+  image: confluentinc/cp-kafka:7.6.1
+  restart: unless-stopped
+  networks:
+    - fraud-net
+  healthcheck:
+    test: ["CMD", "kafka-broker-api-versions", "--bootstrap-server", "localhost:9092"]
+    interval: 10s
+    timeout: 10s
+    retries: 10
+    start_period: 25s
+
+x-kafka-env: &kafka-env
+  # --- KRaft 모드 (broker + controller 겸용) ---
+  KAFKA_PROCESS_ROLES: "broker,controller"
+  KAFKA_CONTROLLER_QUORUM_VOTERS: "1@kafka1:29093,2@kafka2:29093,3@kafka3:29093"
+  KAFKA_CONTROLLER_LISTENER_NAMES: "CONTROLLER"
+  CLUSTER_ID: "MkU3OEVBNTcwNTJENDM2Qk"
+  KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: "PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT"
+  KAFKA_INTER_BROKER_LISTENER_NAME: "PLAINTEXT"
+  # --- 금융 정합성: 복제/내구성 ---
+  KAFKA_DEFAULT_REPLICATION_FACTOR: 3
+  KAFKA_MIN_INSYNC_REPLICAS: 2
+  KAFKA_UNCLEAN_LEADER_ELECTION_ENABLE: "false"
+  KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 3
+  KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 3
+  KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 2
+  KAFKA_NUM_PARTITIONS: 3
+  KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+  KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+
+services:
+  kafka1:
+    <<: *kafka-common
+    container_name: kafka1
+    ports:
+      - "9092:9092"
+    environment:
+      <<: *kafka-env
+      KAFKA_NODE_ID: 1
+      KAFKA_LISTENERS: "PLAINTEXT://0.0.0.0:29092,CONTROLLER://0.0.0.0:29093,PLAINTEXT_HOST://0.0.0.0:9092"
+      KAFKA_ADVERTISED_LISTENERS: "PLAINTEXT://kafka1:29092,PLAINTEXT_HOST://localhost:9092"
+    volumes:
+      - kafka1-data:/var/lib/kafka/data
+
+  kafka2:
+    <<: *kafka-common
+    container_name: kafka2
+    ports:
+      - "9093:9092"
+    environment:
+      <<: *kafka-env
+      KAFKA_NODE_ID: 2
+      KAFKA_LISTENERS: "PLAINTEXT://0.0.0.0:29092,CONTROLLER://0.0.0.0:29093,PLAINTEXT_HOST://0.0.0.0:9092"
+      KAFKA_ADVERTISED_LISTENERS: "PLAINTEXT://kafka2:29092,PLAINTEXT_HOST://localhost:9093"
+    volumes:
+      - kafka2-data:/var/lib/kafka/data
+
+  kafka3:
+    <<: *kafka-common
+    container_name: kafka3
+    ports:
+      - "9094:9092"
+    environment:
+      <<: *kafka-env
+      KAFKA_NODE_ID: 3
+      KAFKA_LISTENERS: "PLAINTEXT://0.0.0.0:29092,CONTROLLER://0.0.0.0:29093,PLAINTEXT_HOST://0.0.0.0:9092"
+      KAFKA_ADVERTISED_LISTENERS: "PLAINTEXT://kafka3:29092,PLAINTEXT_HOST://localhost:9094"
+    volumes:
+      - kafka3-data:/var/lib/kafka/data
+
+  # transactions 토픽 1회 생성(정합성 설정 포함) 후 종료
+  kafka-init:
+    image: confluentinc/cp-kafka:7.6.1
+    container_name: kafka-init
+    depends_on:
+      kafka1:
+        condition: service_healthy
+      kafka2:
+        condition: service_healthy
+      kafka3:
+        condition: service_healthy
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - |
+        kafka-topics --bootstrap-server kafka1:29092 --create --if-not-exists \
+          --topic transactions --partitions 3 --replication-factor 3 \
+          --config min.insync.replicas=2 \
+          --config retention.ms=-1 \
+          --config unclean.leader.election.enable=false
+        echo "=== transactions 토픽 상세 (RF/ISR/min.insync 확인) ==="
+        kafka-topics --bootstrap-server kafka1:29092 --describe --topic transactions
+    networks:
+      - fraud-net
+
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    container_name: kafka-ui
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      KAFKA_CLUSTERS_0_NAME: "local"
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: "kafka1:29092,kafka2:29092,kafka3:29092"
+      DYNAMIC_CONFIG_ENABLED: "true"
+    depends_on:
+      kafka1:
+        condition: service_healthy
+      kafka2:
+        condition: service_healthy
+      kafka3:
+        condition: service_healthy
+    networks:
+      - fraud-net
+
+  # Spark Streaming 작업 (Kafka → Bronze). profile 지정으로 `up`엔 안 뜸.
+  # 실행: docker compose -f docker/docker-compose.yml run --rm spark-streaming
+  spark-streaming:
+    image: apache/spark:3.5.1
+    profiles: ["jobs"]
+    user: root  # 로컬 dev: bind-mount(/datalake) + ivy 캐시 쓰기 권한
+    depends_on:
+      kafka1:
+        condition: service_healthy
+      kafka2:
+        condition: service_healthy
+      kafka3:
+        condition: service_healthy
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: "kafka1:29092,kafka2:29092,kafka3:29092"
+      KAFKA_TOPIC: "transactions"
+      BRONZE_PATH: "/datalake/bronze"
+      CHECKPOINT_PATH: "/datalake/_checkpoints/bronze"
+    volumes:
+      - ../spark:/app
+      - ../datalake:/datalake
+      - ivy-cache:/tmp/.ivy2
+    networks:
+      - fraud-net
+    entrypoint:
+      - /opt/spark/bin/spark-submit
+    command:
+      - --packages
+      - org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.1
+      - --conf
+      - spark.jars.ivy=/tmp/.ivy2
+      - /app/streaming_bronze.py
+
+  # Spark Batch 작업 (Bronze → Silver). profile 지정으로 `up`엔 안 뜸.
+  # 실행: docker compose -f docker/docker-compose.yml run --rm spark-silver
+  spark-silver:
+    image: apache/spark:3.5.1
+    profiles: ["jobs"]
+    user: root
+    environment:
+      BRONZE_PATH: "/datalake/bronze"
+      SILVER_PATH: "/datalake/silver"
+      STEP_EPOCH: "2016-01-01 00:00:00"
+    volumes:
+      - ../spark:/app
+      - ../datalake:/datalake
+      - ivy-cache:/tmp/.ivy2
+    networks:
+      - fraud-net
+    entrypoint:
+      - /opt/spark/bin/spark-submit
+    command:
+      - --conf
+      - spark.jars.ivy=/tmp/.ivy2
+      - /app/batch_silver.py
+
+volumes:
+  kafka1-data:
+  kafka2-data:
+  kafka3-data:
+  ivy-cache:
+
+networks:
+  fraud-net:
+    driver: bridge

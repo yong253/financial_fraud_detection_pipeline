@@ -78,7 +78,7 @@ financial_fraud_detection_pipeline/
 
 ## 데이터셋
 
-- 파일: `PS_20174392719_1491204439457_log.csv`
+- 파일: `Synthetic_Financial_datasets_log.csv` (경로: `data/raw/`)
 - 규모: 630만 건, ~500MB
 - 컬럼: `step, type, amount, nameOrig, oldbalanceOrg, newbalanceOrig, nameDest, oldbalanceDest, newbalanceDest, isFraud, isFlaggedFraud`
 - 사기는 `CASH_OUT`, `TRANSFER` 유형에서만 발생
@@ -129,6 +129,8 @@ KAFKA_TOPIC=transactions
 - Quarantine으로 격리된 데이터는 삭제하지 않고 보존한다
 - DBT 모델에는 `not_null`, `unique` 테스트를 반드시 작성한다
 - Docker Compose로 로컬에서 전체 파이프라인이 재현 가능해야 한다
+- **전 컴포넌트는 무손실 + 무중복으로 설정한다**: Kafka RF=3·min.insync=2·unclean.leader.election=false·멱등 Producer(acks=all), Spark checkpoint·멱등 재처리(partitionOverwrite dynamic)·dedup 키, Airflow 멱등 태스크. 금액은 float 드리프트 방지 위해 문자열/decimal 직렬화. (설정 기준: `TODO.md` "컴포넌트별 정합성 설정")
+- **95% 이상 확실하지 않은 결정/가정은 임의로 진행하지 않는다.** 진행 전 사용자에게 확인하고 확정한다.
 
 ---
 
