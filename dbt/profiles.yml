@@ -1,0 +1,11 @@
+# 로컬 개발: DuckDB target (BigQuery 대체재)
+# GCP 전환 시: outputs에 prod(type: bigquery) 추가하고 target만 교체
+# 경로는 dbt 실행 위치(dbt/) 기준 상대경로 → ../datalake
+# dbt는 .env를 자동 로드하지 않으므로 env_var 기본값으로 동작
+fraud_dbt:
+  target: dev
+  outputs:
+    dev:
+      type: duckdb
+      path: "{{ env_var('DUCKDB_PATH', '../datalake/warehouse.duckdb') }}"
+      threads: 4

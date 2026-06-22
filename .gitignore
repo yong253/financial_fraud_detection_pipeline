@@ -3,6 +3,7 @@
 credentials/
 *.json
 !dbt/profiles.yml
+TODO.md
 
 # 데이터 (대용량)
 data/raw/
@@ -36,6 +37,12 @@ airflow.db
 datalake/
 checkpoints/
 *.duckdb
+
+# DBT (산출물 / 로컬 사용자 파일)
+dbt/target/
+dbt/dbt_packages/
+dbt/logs/
+dbt/.user.yml
 
 # OS
 .DS_Store

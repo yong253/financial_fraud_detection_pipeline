@@ -1,0 +1,19 @@
+version: 2
+
+models:
+  - name: stg_silver_transactions
+    description: "Silver Parquet(정상 파티션만, quarantine 제외)을 노출하는 staging view"
+    columns:
+      - name: row_id
+        description: "SHA-256 dedup 키 (Silver에서 dropDuplicates 완료)"
+        data_tests:
+          - not_null
+          - unique
+      - name: is_suspicious
+        description: "isFraud=1 AND isFlaggedFraud=0 (미탐지 사기 플래그)"
+        data_tests:
+          - not_null
+      - name: type
+        data_tests:
+          - accepted_values:
+              values: ['PAYMENT', 'TRANSFER', 'CASH_OUT', 'CASH_IN', 'DEBIT']

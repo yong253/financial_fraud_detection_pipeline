@@ -1,0 +1,16 @@
+name: 'fraud_dbt'
+version: '1.0.0'
+config-version: 2
+
+# 사용할 프로파일 (profiles.yml의 최상위 키와 일치)
+profile: 'fraud_dbt'
+
+model-paths: ["models"]
+
+# materialization 기본값: staging은 view(가볍게), gold는 table(Grafana 조회용)
+models:
+  fraud_dbt:
+    staging:
+      +materialized: view
+    gold:
+      +materialized: table

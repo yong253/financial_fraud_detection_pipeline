@@ -1,0 +1,39 @@
+version: 2
+
+models:
+  - name: undetected_fraud
+    description: "🎯 핵심 테이블 — 룰 기반 시스템이 미탐지한 사기 (isFraud=1 & isFlaggedFraud=0)"
+    columns:
+      - name: row_id
+        description: "SHA-256 dedup 키 (무중복 보장)"
+        data_tests:
+          - not_null
+          - unique
+      - name: is_suspicious
+        description: "전 행이 미탐지 사기여야 함"
+        data_tests:
+          - accepted_values:
+              values: [true]
+      - name: type
+        description: "사기는 CASH_OUT/TRANSFER 유형에서만 발생"
+        data_tests:
+          - accepted_values:
+              values: ['CASH_OUT', 'TRANSFER']
+
+  - name: hourly_summary
+    description: "시간대별 거래량/사기 집계"
+    columns:
+      - name: tx_hour
+        data_tests:
+          - not_null
+
+  - name: account_risk
+    description: "계좌별 누적 위험도 (사기 연루 계좌만)"
+    columns:
+      - name: account_id
+        data_tests:
+          - not_null
+          - unique
+      - name: fraud_tx_count
+        data_tests:
+          - not_null
