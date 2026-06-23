@@ -21,6 +21,9 @@ BRONZE_PATH      = os.getenv("BRONZE_PATH",  "/datalake/bronze")
 SILVER_PATH      = os.getenv("SILVER_PATH",  "/datalake/silver")
 SILVER_QUAR_PATH = SILVER_PATH.rstrip("/") + "/quarantine"
 STEP_EPOCH       = os.getenv("STEP_EPOCH",   "2016-01-01 00:00:00")
+# Model 2(이벤트시간 일별 증분): 지정 시 해당 tx_date 1일치 valid 행만 Silver로 기록.
+# 미지정(None)이면 전체 처리 — 기존 동작 유지(하위호환). Airflow가 {{ ds }}를 주입.
+TARGET_TX_DATE   = os.getenv("TARGET_TX_DATE")  # "YYYY-MM-DD" 또는 None
 
 VALID_TYPES = ["PAYMENT", "TRANSFER", "CASH_OUT", "CASH_IN", "DEBIT"]
 
@@ -147,10 +150,20 @@ def main() -> None:
         is_susp.alias("is_suspicious"),
     )
 
+    # ── Step 5b: Model 2 — 지정된 tx_date 1일치만 선택 (멱등 일별 증분) ──
+    # 정합성 검증(Step 4)은 전체 Bronze 기준으로 이미 수행됨(파싱 무손실 확인).
+    # 여기서는 "기록 대상"만 해당 날짜로 좁힌다 → dynamic overwrite가 그 파티션만 덮어씀.
+    if TARGET_TX_DATE:
+        silver_df = silver_df.filter(
+            F.col("tx_date") == F.to_date(F.lit(TARGET_TX_DATE))
+        )
+        print(f"[silver] TARGET_TX_DATE={TARGET_TX_DATE} → 해당 일자만 기록")
+
     # ── Step 6: dedup (Spark 재시작으로 인한 Bronze→Silver 중복 흡수) ────
-    silver_df     = silver_df.dropDuplicates(["row_id"])
-    silver_count  = silver_df.count()
-    dedup_removed = valid_raw_count - silver_count
+    pre_dedup_count = silver_df.count()          # (날짜 필터 적용 후) 기록 후보 수
+    silver_df       = silver_df.dropDuplicates(["row_id"])
+    silver_count    = silver_df.count()
+    dedup_removed   = pre_dedup_count - silver_count
 
     # ── Step 7: Silver 저장 (dynamic overwrite, 멱등) ────────────────────
     silver_df.write \

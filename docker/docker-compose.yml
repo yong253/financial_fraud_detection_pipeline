@@ -45,6 +45,33 @@ x-kafka-env: &kafka-env
   KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
   KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
 
+# Airflow 3개 서비스(init/webserver/scheduler) 공통 설정 — LocalExecutor
+x-airflow-common: &airflow-common
+  build:
+    context: ${HOST_PROJECT_DIR:-..}/airflow
+    dockerfile: Dockerfile
+  image: fraud-airflow:local
+  user: "50000:0"   # airflow UID 50000 + root그룹(GID 0) → docker.sock 접근
+  environment: &airflow-env
+    AIRFLOW__CORE__EXECUTOR: LocalExecutor
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@airflow-postgres/airflow
+    AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+    AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "true"
+    AIRFLOW__WEBSERVER__EXPOSE_CONFIG: "true"
+    AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: "true"
+    # 주의: HOST_PROJECT_DIR는 컨테이너 env로 주지 않는다. 형제 잡 실행 시 .env의 절대값이
+    # shell env에 가려지면 안 되기 때문. DAG BashOperator가 .env에서 직접 export 한다.
+    PROJECT_COMPOSE_DIR: /opt/airflow/project
+  volumes:
+    - ${HOST_PROJECT_DIR:-..}/airflow/dags:/opt/airflow/dags
+    - ${HOST_PROJECT_DIR:-..}/airflow/logs:/opt/airflow/logs
+    - ${HOST_PROJECT_DIR:-..}/airflow/plugins:/opt/airflow/plugins
+    - ${HOST_PROJECT_DIR:-..}/datalake:/datalake
+    - ${HOST_PROJECT_DIR:-..}:/opt/airflow/project   # compose 파일/잡 코드 접근
+    - /var/run/docker.sock:/var/run/docker.sock
+  networks:
+    - fraud-net
+
 services:
   kafka1:
     <<: *kafka-common
@@ -148,8 +175,8 @@ services:
       BRONZE_PATH: "/datalake/bronze"
       CHECKPOINT_PATH: "/datalake/_checkpoints/bronze"
     volumes:
-      - ../spark:/app
-      - ../datalake:/datalake
+      - ${HOST_PROJECT_DIR:-..}/spark:/app
+      - ${HOST_PROJECT_DIR:-..}/datalake:/datalake
       - ivy-cache:/tmp/.ivy2
     networks:
       - fraud-net
@@ -173,8 +200,8 @@ services:
       SILVER_PATH: "/datalake/silver"
       STEP_EPOCH: "2016-01-01 00:00:00"
     volumes:
-      - ../spark:/app
-      - ../datalake:/datalake
+      - ${HOST_PROJECT_DIR:-..}/spark:/app
+      - ${HOST_PROJECT_DIR:-..}/datalake:/datalake
       - ivy-cache:/tmp/.ivy2
     networks:
       - fraud-net
@@ -185,11 +212,97 @@ services:
       - spark.jars.ivy=/tmp/.ivy2
       - /app/batch_silver.py
 
+  # dbt (Silver → Gold). profile 지정으로 `up`엔 안 뜸.
+  # 실행: docker compose -f docker/docker-compose.yml run --rm dbt run --profiles-dir .
+  #       docker compose -f docker/docker-compose.yml run --rm dbt test --profiles-dir .
+  dbt:
+    build:
+      context: ../dbt
+      dockerfile: Dockerfile
+    image: fraud-dbt:local
+    profiles: ["jobs"]
+    working_dir: /dbt
+    environment:
+      # 컨테이너 working_dir=/dbt 기준 ../datalake = /datalake (마운트 지점)
+      DUCKDB_PATH: "/datalake/warehouse.duckdb"
+      SILVER_PATH: "/datalake/silver"
+    volumes:
+      - ${HOST_PROJECT_DIR:-..}/dbt:/dbt
+      - ${HOST_PROJECT_DIR:-..}/datalake:/datalake
+    networks:
+      - fraud-net
+    command: ["run", "--profiles-dir", "."]
+
+  # ── Airflow 스택 (⑤ 오케스트레이션, LocalExecutor) ──────────────────────
+  airflow-postgres:
+    image: postgres:13
+    container_name: airflow-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: airflow
+      POSTGRES_PASSWORD: airflow
+      POSTGRES_DB: airflow
+    volumes:
+      - airflow-pg-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "airflow"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - fraud-net
+
+  # DB 마이그레이션 + admin 유저 생성 후 종료
+  airflow-init:
+    <<: *airflow-common
+    container_name: airflow-init
+    entrypoint: /bin/bash
+    command:
+      - -c
+      - |
+        airflow db migrate
+        airflow users create --username admin --password admin \
+          --firstname admin --lastname user --role Admin --email admin@example.com || true
+    depends_on:
+      airflow-postgres:
+        condition: service_healthy
+
+  airflow-webserver:
+    <<: *airflow-common
+    container_name: airflow-webserver
+    restart: unless-stopped
+    command: webserver
+    ports:
+      - "8081:8080"   # kafka-ui가 8080 점유 → Airflow는 8081
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 40s
+    depends_on:
+      airflow-postgres:
+        condition: service_healthy
+      airflow-init:
+        condition: service_completed_successfully
+
+  airflow-scheduler:
+    <<: *airflow-common
+    container_name: airflow-scheduler
+    restart: unless-stopped
+    command: scheduler
+    depends_on:
+      airflow-postgres:
+        condition: service_healthy
+      airflow-init:
+        condition: service_completed_successfully
+
 volumes:
   kafka1-data:
   kafka2-data:
   kafka3-data:
   ivy-cache:
+  airflow-pg-data:
 
 networks:
   fraud-net:
