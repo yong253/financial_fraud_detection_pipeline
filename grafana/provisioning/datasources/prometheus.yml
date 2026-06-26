@@ -1,0 +1,14 @@
+# Grafana 데이터소스 자동 등록 — 단일 Prometheus(통합 결정).
+# uid 고정: 대시보드 JSON이 이 uid("fraud-prometheus")를 참조하므로 변경 금지.
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    uid: fraud-prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    editable: false
+    jsonData:
+      timeInterval: 15s

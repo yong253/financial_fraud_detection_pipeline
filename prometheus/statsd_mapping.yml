@@ -1,0 +1,37 @@
+# statsd-exporter 매핑 — Airflow StatsD(점표기) → 라벨 달린 Prometheus 메트릭.
+# dag_id/task_id가 메트릭 이름에 박혀 들어오는 것만 매핑해 라벨로 분리(이름 카디널리티 폭발 방지).
+# 매핑에 안 걸리는 메트릭(dagbag_size 등)은 statsd-exporter 기본 규칙으로 airflow_* 이름 노출.
+mappings:
+  # DAG run 소요시간(성공/실패) — 핵심 헬스 신호.
+  - match: "airflow.dagrun.duration.success.*"
+    name: "airflow_dagrun_duration_success"
+    labels:
+      dag_id: "$1"
+  - match: "airflow.dagrun.duration.failed.*"
+    name: "airflow_dagrun_duration_failed"
+    labels:
+      dag_id: "$1"
+
+  # 태스크별 소요시간: airflow.dag.<dag_id>.<task_id>.duration
+  - match: "airflow.dag.*.*.duration"
+    name: "airflow_task_duration"
+    labels:
+      dag_id: "$1"
+      task_id: "$2"
+
+  # 스케줄 지연.
+  - match: "airflow.dagrun.schedule_delay.*"
+    name: "airflow_dagrun_schedule_delay"
+    labels:
+      dag_id: "$1"
+
+  # 태스크 인스턴스 성공/실패 카운터.
+  - match: "airflow.ti_failures"
+    name: "airflow_ti_failures"
+  - match: "airflow.ti_successes"
+    name: "airflow_ti_successes"
+
+  # 스케줄러 하트비트(살아있는지).
+  - match: "airflow.scheduler_heartbeat"
+    name: "airflow_scheduler_heartbeat"
+  # 매핑에 안 걸린 나머지는 statsd-exporter 기본 규칙(점→밑줄)으로 자동 노출됨.

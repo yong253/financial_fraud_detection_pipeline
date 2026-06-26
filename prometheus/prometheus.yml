@@ -1,0 +1,28 @@
+# Prometheus 스크레이프 설정 — ⑥ 모니터링
+# 컨테이너 내부 호스트명(fraud-net) 기준. 배치 파이프라인이라 15s 간격이면 충분.
+global:
+  scrape_interval: 15s
+  scrape_timeout: 10s
+
+scrape_configs:
+  # 배치 잡(Airflow DAG)이 push 한 records + 사기 KPI.
+  # honor_labels=true → DAG가 붙인 job/tx_date 라벨을 Prometheus가 덮어쓰지 않음.
+  - job_name: pushgateway
+    honor_labels: true
+    static_configs:
+      - targets: ["pushgateway:9091"]
+
+  # Kafka 인제스트 헬스 — broker 수 / 토픽 오프셋(=메시지 수) / consumer lag.
+  - job_name: kafka
+    static_configs:
+      - targets: ["kafka-exporter:9308"]
+
+  # Airflow 운영 메트릭 — StatsD → statsd-exporter 변환분(DAG/태스크 성공·실패·duration).
+  - job_name: airflow
+    static_configs:
+      - targets: ["statsd-exporter:9102"]
+
+  # Prometheus 자체 헬스.
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]

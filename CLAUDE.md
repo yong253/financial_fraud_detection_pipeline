@@ -38,8 +38,14 @@ Bronze → Spark Batch → Silver → DBT → Gold → Grafana
     DAG가 Bronze 스토리지에서 출발하므로 위 적재 방식 교체와 무관(불변).
   ※ 처리 모델 = 이벤트시간(tx_date) 일별 증분: DAG run 1개 = 하루치({{ ds }}), catchup 백필.
 
-모니터링:
-Kafka/Spark metrics → Prometheus → Grafana
+모니터링 (⑥, profile=monitoring):
+  Kafka 인제스트 → kafka-exporter ─┐
+  Airflow 운영(StatsD) → statsd-exporter ─┼→ Prometheus → Grafana(단일 데이터소스)
+  배치 records + 사기 KPI → DAG가 Pushgateway로 push ─┘
+  ※ Gold(DuckDB)는 Grafana 네이티브 미지원 → DAG push_metrics 태스크가 집계 카운트를
+    Pushgateway(Prometheus 게이지)로 전송. 상세 행 대신 Top-N/카운트 게이지로 표현.
+  기동: docker compose -f docker/docker-compose.yml --profile monitoring up -d
+  포트: Prometheus 9090 / Pushgateway 9091 / Grafana 3000(admin/admin) / kafka-exporter 9308 / statsd-exporter 9102
 ```
 
 ---
@@ -65,8 +71,12 @@ financial_fraud_detection_pipeline/
 │   │       ├── undetected_fraud.sql
 │   │       └── account_risk.sql
 │   └── profiles.yml
+├── prometheus/
+│   ├── prometheus.yml       # 스크레이프 설정 (pushgateway/kafka/airflow)
+│   └── statsd_mapping.yml   # Airflow StatsD → Prometheus 라벨 매핑
 ├── grafana/
-│   └── dashboards/
+│   ├── dashboards/          # fraud_overview.json (대시보드 모델)
+│   └── provisioning/        # 데이터소스/대시보드 자동 등록
 ├── docker/
 │   └── docker-compose.yml
 ├── data/

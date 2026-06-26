@@ -16,4 +16,5 @@ RUN apt-get update \
  && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 USER airflow
-RUN pip install --no-cache-dir duckdb==1.1.0
+# duckdb: reconcile/push_metrics 의 Gold/Silver 조회용. prometheus_client: ⑥ Pushgateway push 용.
+RUN pip install --no-cache-dir duckdb==1.1.0 prometheus_client==0.20.0

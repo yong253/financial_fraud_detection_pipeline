@@ -59,6 +59,12 @@ x-airflow-common: &airflow-common
     AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "true"
     AIRFLOW__WEBSERVER__EXPOSE_CONFIG: "true"
     AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: "true"
+    # ⑥ 모니터링: Airflow 운영 메트릭을 StatsD(UDP)로 statsd-exporter에 전송.
+    # statsd-exporter(monitoring profile)가 꺼져 있어도 UDP fire-and-forget이라 무해.
+    AIRFLOW__METRICS__STATSD_ON: "true"
+    AIRFLOW__METRICS__STATSD_HOST: statsd-exporter
+    AIRFLOW__METRICS__STATSD_PORT: "9125"
+    AIRFLOW__METRICS__STATSD_PREFIX: airflow
     # 주의: HOST_PROJECT_DIR는 컨테이너 env로 주지 않는다. 형제 잡 실행 시 .env의 절대값이
     # shell env에 가려지면 안 되기 때문. DAG BashOperator가 .env에서 직접 export 한다.
     PROJECT_COMPOSE_DIR: /opt/airflow/project
@@ -297,12 +303,98 @@ services:
       airflow-init:
         condition: service_completed_successfully
 
+  # ── ⑥ 모니터링 스택 (profile=monitoring) ──────────────────────────────────
+  # 기동: docker compose -f docker/docker-compose.yml --profile monitoring up -d
+  #   - Kafka 인제스트 헬스: kafka-exporter → Prometheus
+  #   - Airflow 운영 메트릭: statsd-exporter → Prometheus
+  #   - 배치 records + 사기 KPI: DAG가 Pushgateway로 push → Prometheus
+  #   - 시각화: Grafana(단일 Prometheus 데이터소스, 대시보드/데이터소스 프로비저닝)
+
+  prometheus:
+    image: prom/prometheus:v2.53.0
+    container_name: prometheus
+    profiles: ["monitoring"]
+    restart: unless-stopped
+    ports:
+      - "9090:9090"
+    volumes:
+      - ${HOST_PROJECT_DIR:-..}/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+    networks:
+      - fraud-net
+
+  pushgateway:
+    image: prom/pushgateway:v1.9.0
+    container_name: pushgateway
+    profiles: ["monitoring"]
+    restart: unless-stopped
+    ports:
+      - "9091:9091"
+    networks:
+      - fraud-net
+
+  kafka-exporter:
+    image: danielqsj/kafka-exporter:v1.7.0
+    container_name: kafka-exporter
+    profiles: ["monitoring"]
+    restart: unless-stopped
+    ports:
+      - "9308:9308"
+    command:
+      - --kafka.server=kafka1:29092
+      - --kafka.server=kafka2:29092
+      - --kafka.server=kafka3:29092
+    networks:
+      - fraud-net
+
+  statsd-exporter:
+    image: prom/statsd-exporter:v0.27.1
+    container_name: statsd-exporter
+    profiles: ["monitoring"]
+    restart: unless-stopped
+    ports:
+      - "9102:9102"     # Prometheus scrape (HTTP)
+      - "9125:9125/udp" # Airflow StatsD 수신 (UDP)
+    volumes:
+      - ${HOST_PROJECT_DIR:-..}/prometheus/statsd_mapping.yml:/etc/statsd/mapping.yml:ro
+    command:
+      - --statsd.mapping-config=/etc/statsd/mapping.yml
+      - --statsd.listen-udp=:9125
+      - --web.listen-address=:9102
+    networks:
+      - fraud-net
+
+  grafana:
+    image: grafana/grafana:11.1.0
+    container_name: grafana
+    profiles: ["monitoring"]
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - ${HOST_PROJECT_DIR:-..}/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ${HOST_PROJECT_DIR:-..}/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    depends_on:
+      - prometheus
+    networks:
+      - fraud-net
+
 volumes:
   kafka1-data:
   kafka2-data:
   kafka3-data:
   ivy-cache:
   airflow-pg-data:
+  prometheus-data:
+  grafana-data:
 
 networks:
   fraud-net:

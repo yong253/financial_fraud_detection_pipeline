@@ -25,6 +25,10 @@ BRONZE_PATH = os.getenv("BRONZE_PATH", "/datalake/bronze")
 CHECKPOINT_PATH = os.getenv("CHECKPOINT_PATH", "/datalake/_checkpoints/bronze")
 MAX_OFFSETS_PER_TRIGGER = os.getenv("MAX_OFFSETS_PER_TRIGGER", "10000")
 BRONZE_FORMAT = os.getenv("BRONZE_FORMAT", "parquet")  # 검증 시 json, 운영은 parquet
+# 트리거 모드: oneshot=availableNow(쌓인 것 처리 후 종료, 기본·테스트 보존)
+#            continuous=processingTime(상시 가동, 실시간 유입 적재 — day-by-day 흐름용)
+STREAM_TRIGGER = os.getenv("STREAM_TRIGGER", "oneshot")
+STREAM_INTERVAL = os.getenv("STREAM_INTERVAL", "10 seconds")
 
 
 def main() -> None:
@@ -51,15 +55,23 @@ def main() -> None:
         F.col("timestamp").alias("kafka_timestamp"),
     ).withColumn("date", F.to_date(F.col("kafka_timestamp")))
 
-    query = (
+    writer = (
         bronze.writeStream.format(BRONZE_FORMAT)
         .option("path", BRONZE_PATH)
         .option("checkpointLocation", CHECKPOINT_PATH)
         .partitionBy("date")
         .outputMode("append")
-        .trigger(availableNow=True)  # 쌓인 것 처리 후 종료(슬라이스 검증). 상시는 이후 전환.
-        .start()
     )
+    if STREAM_TRIGGER == "continuous":
+        # 상시 가동: Kafka 유입을 주기적으로 Bronze에 적재(day-by-day 실시간 흐름).
+        writer = writer.trigger(processingTime=STREAM_INTERVAL)
+        print(f"[bronze] continuous 모드 (interval={STREAM_INTERVAL}) — 상시 가동")
+    else:
+        # 쌓인 것 처리 후 종료(슬라이스/배치 검증).
+        writer = writer.trigger(availableNow=True)
+        print("[bronze] oneshot 모드 (availableNow) — 드레인 후 종료")
+
+    query = writer.start()
     query.awaitTermination()
     print(f"[bronze] 완료 → {BRONZE_PATH}")
 
