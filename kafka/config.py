@@ -18,6 +18,10 @@ TOPIC = os.getenv("KAFKA_TOPIC", "transactions")
 RAW_CSV_PATH = os.getenv(
     "RAW_CSV_PATH", "./data/raw/Synthetic_Financial_datasets_log.csv"
 )
+# E단계: --done-marker gs:// 업로드용 GCP 서비스계정 키 경로
+GCP_CREDENTIALS_PATH = os.getenv(
+    "GCP_CREDENTIALS_PATH", "./credentials/service_account.json"
+)
 
 
 def producer_config() -> dict:

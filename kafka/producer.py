@@ -147,11 +147,20 @@ def main() -> int:
     _report(sent, time.time() - start)
 
     # --realtime 마지막 날 완결 신호: 센서가 "다음날 없음 → done-marker"로 마지막 tx_date 완결 판정.
+    # gs:// 경로면 GCS에 직접 업로드(E단계: 수집 완전 자동화), 아니면 기존 로컬 파일 유지.
     if args.realtime and args.done_marker:
-        import os
-        os.makedirs(os.path.dirname(args.done_marker) or ".", exist_ok=True)
-        with open(args.done_marker, "w", encoding="utf-8") as mf:
-            mf.write(f"delivered={_stats['delivered']} failed={_stats['failed']}\n")
+        marker_body = f"delivered={_stats['delivered']} failed={_stats['failed']}\n"
+        if args.done_marker.startswith("gs://"):
+            from google.cloud import storage
+
+            bucket_name, _, blob_name = args.done_marker[len("gs://"):].partition("/")
+            client = storage.Client.from_service_account_json(config.GCP_CREDENTIALS_PATH)
+            client.bucket(bucket_name).blob(blob_name).upload_from_string(marker_body)
+        else:
+            import os
+            os.makedirs(os.path.dirname(args.done_marker) or ".", exist_ok=True)
+            with open(args.done_marker, "w", encoding="utf-8") as mf:
+                mf.write(marker_body)
         print(f"[realtime] 완료 마커 생성 → {args.done_marker}", flush=True)
 
     return 0 if _stats["failed"] == 0 else 1

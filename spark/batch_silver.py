@@ -1,7 +1,8 @@
-"""Bronze → Silver Spark 배치 (parquet → Silver parquet).
+"""Bronze → Silver Spark 배치 (Bronze JSON → Silver parquet).
 
 Medallion Silver 규칙:
-  - Bronze value(JSON string) 파싱 + 타입 변환 + 품질 검증
+  - Bronze는 Kafka Connect GCS Sink가 쓴 평탄 JSON(payload 필드 top-level) + kafka_timestamp
+    (Connect SMT가 넣는 epoch millis) — 타입 변환 + 품질 검증
   - Quarantine 패턴: 불량 데이터 → silver/quarantine/ (삭제 금지)
   - 건수 정합성: Bronze == valid_raw + quarantine (불일치 시 중단)
   - is_suspicious 플래그: isFraud=1 AND isFlaggedFraud=0 (핵심 스토리)
@@ -16,7 +17,7 @@ import os
 
 from pyspark.sql import SparkSession
 from pyspark.sql import functions as F
-from pyspark.sql.types import DecimalType, StructField, StructType, StringType
+from pyspark.sql.types import DecimalType, LongType, StructField, StructType, StringType
 
 
 # 설정 소스 우선순위: CLI 인자(--bronze-path 등) > 환경변수 > 기본값.
@@ -44,7 +45,8 @@ TARGET_TX_DATE   = _cfg.target_tx_date  # "YYYY-MM-DD" 또는 None
 
 VALID_TYPES = ["PAYMENT", "TRANSFER", "CASH_OUT", "CASH_IN", "DEBIT"]
 
-# Bronze value 안 JSON 필드 — Producer가 csv.DictReader로 읽어 str 직렬화
+# Bronze payload 필드 — Producer가 csv.DictReader로 읽어 str 직렬화, Kafka Connect가
+# 평탄 JSON(top-level)으로 그대로 씀(Schema Registry 없이 schemaless JSON 유지).
 PAYLOAD_SCHEMA = StructType([
     StructField("step",           StringType()),
     StructField("type",           StringType()),
@@ -59,34 +61,45 @@ PAYLOAD_SCHEMA = StructType([
     StructField("isFlaggedFraud", StringType()),
 ])
 
+# E단계: Bronze 전체 스키마 = payload 필드(top-level) + kafka_timestamp.
+# kafka_timestamp는 Kafka Connect SMT(InsertField$Value)가 넣는 Kafka record timestamp
+# (epoch millis, LongType) — 실측 확인됨(gsutil cat으로 숫자 필드 확인).
+BRONZE_SCHEMA = StructType(
+    PAYLOAD_SCHEMA.fields + [StructField("kafka_timestamp", LongType())]
+)
+
 
 def _reject_reason():
-    """품질 검증 표현식. 첫 번째 매칭 조건을 reject_reason으로, 정상은 NULL."""
-    p = "payload"
+    """품질 검증 표현식. 첫 번째 매칭 조건을 reject_reason으로, 정상은 NULL.
+
+    Bronze가 평탄 JSON(payload 필드 top-level)이라 프리픽스 없이 직접 참조.
+    이전(Parquet+from_json 파싱 시절)의 "null_value"(value 컬럼 자체가 없음)와
+    "parse_error"(일부 필드 파싱 실패)는 평탄 스키마에서 더 이상 구분되지 않아
+    parse_error로 통합(다른 곳에서 "null_value" 문자열 참조 없음을 grep으로 확인).
+    """
     return (
-        F.when(F.col("value").isNull(), "null_value")
+        F.when(
+            F.col("step").isNull()     | F.col("amount").isNull()   |
+            F.col("nameOrig").isNull() | F.col("type").isNull()    |
+            F.col("nameDest").isNull(),
+            "parse_error",
+        )
          .when(
-             F.col(f"{p}.step").isNull()    | F.col(f"{p}.amount").isNull()   |
-             F.col(f"{p}.nameOrig").isNull() | F.col(f"{p}.type").isNull()    |
-             F.col(f"{p}.nameDest").isNull(),
-             "parse_error",
-         )
-         .when(
-             F.col(f"{p}.amount").cast("double").isNull() |
-             (F.col(f"{p}.amount").cast("double") <= 0),
+             F.col("amount").cast("double").isNull() |
+             (F.col("amount").cast("double") <= 0),
              "invalid_amount",
          )
          .when(
-             F.col(f"{p}.step").cast("int").isNull()  |
-             (F.col(f"{p}.step").cast("int") <= 0)    |
-             (F.col(f"{p}.step").cast("int") > 743),
+             F.col("step").cast("int").isNull()  |
+             (F.col("step").cast("int") <= 0)    |
+             (F.col("step").cast("int") > 743),
              "invalid_step",
          )
-         .when(~F.col(f"{p}.type").isin(VALID_TYPES), "invalid_type")
-         .when(~F.col(f"{p}.isFraud").isin("0", "1"), "invalid_flag")
-         .when(~F.col(f"{p}.isFlaggedFraud").isin("0", "1"), "invalid_flag")
-         .when(F.col(f"{p}.oldbalanceOrg").cast("double") < 0, "negative_balance")
-         .when(F.col(f"{p}.newbalanceOrig").cast("double") < 0, "negative_balance")
+         .when(~F.col("type").isin(VALID_TYPES), "invalid_type")
+         .when(~F.col("isFraud").isin("0", "1"), "invalid_flag")
+         .when(~F.col("isFlaggedFraud").isin("0", "1"), "invalid_flag")
+         .when(F.col("oldbalanceOrg").cast("double") < 0, "negative_balance")
+         .when(F.col("newbalanceOrig").cast("double") < 0, "negative_balance")
     )
 
 
@@ -100,22 +113,17 @@ def main() -> None:
     )
     spark.sparkContext.setLogLevel("WARN")
 
-    # ── Step 1: Bronze 읽기 ───────────────────────────────────────────────
-    bronze_df    = spark.read.parquet(BRONZE_PATH)
+    # ── Step 1: Bronze 읽기 (평탄 JSON, 명시 스키마) ────────────────────────
+    bronze_df    = spark.read.schema(BRONZE_SCHEMA).json(BRONZE_PATH)
     bronze_count = bronze_df.count()
     print(f"[silver] bronze 읽기: {bronze_count}행")
 
-    # ── Step 2: value JSON 파싱 ───────────────────────────────────────────
-    parsed = bronze_df.withColumn(
-        "payload", F.from_json(F.col("value"), PAYLOAD_SCHEMA)
-    )
-
-    # ── Step 3: valid / quarantine 분리 ──────────────────────────────────
-    labeled    = parsed.withColumn("reject_reason", _reject_reason())
+    # ── Step 2: valid / quarantine 분리 (payload 필드가 이미 top-level) ─────
+    labeled    = bronze_df.withColumn("reject_reason", _reject_reason())
     valid_raw  = labeled.filter(F.col("reject_reason").isNull())
     quarantine = labeled.filter(F.col("reject_reason").isNotNull())
 
-    # ── Step 4: 건수 정합성 검증 (저장 전) ──────────────────────────────
+    # ── Step 3: 건수 정합성 검증 (저장 전) ──────────────────────────────
     valid_raw_count = valid_raw.count()
     quar_count      = quarantine.count()
     if valid_raw_count + quar_count != bronze_count:
@@ -126,49 +134,51 @@ def main() -> None:
         )
     print(f"[silver] 정합성 OK — valid={valid_raw_count}, quarantine={quar_count}")
 
-    # ── Step 5: Silver 컬럼 변환 ─────────────────────────────────────────
+    # ── Step 4: Silver 컬럼 변환 ─────────────────────────────────────────
     # tx_timestamp: 2016-01-01 00:00:00 + (step-1) hours
     epoch_unix = F.unix_timestamp(F.lit(STEP_EPOCH))
     tx_ts = F.to_timestamp(
-        epoch_unix + (F.col("payload.step").cast("long") - 1) * 3600
+        epoch_unix + (F.col("step").cast("long") - 1) * 3600
     )
+    # kafka_timestamp: epoch millis(Long) → Spark timestamp
+    kafka_ts = F.timestamp_millis(F.col("kafka_timestamp"))
 
     # row_id: Spark 재처리 중복 방지용 SHA-256 해시
     row_id = F.sha2(
         F.concat_ws("|",
-            F.col("payload.nameOrig"), F.col("payload.step"),
-            F.col("payload.type"),     F.col("payload.amount"),
-            F.col("payload.nameDest"),
+            F.col("nameOrig"), F.col("step"),
+            F.col("type"),     F.col("amount"),
+            F.col("nameDest"),
         ), 256
     )
 
     is_susp = (
-        (F.col("payload.isFraud").cast("int") == 1) &
-        (F.col("payload.isFlaggedFraud").cast("int") == 0)
+        (F.col("isFraud").cast("int") == 1) &
+        (F.col("isFlaggedFraud").cast("int") == 0)
     )
 
     dec = DecimalType(18, 2)
     silver_df = valid_raw.select(
         row_id.alias("row_id"),
-        F.col("payload.step").cast("int").alias("step"),
+        F.col("step").cast("int").alias("step"),
         tx_ts.alias("tx_timestamp"),
         F.to_date(tx_ts).alias("tx_date"),      # 파티션 키 (2016-01-xx)
-        F.col("kafka_timestamp"),                # 적재 시각 (운영 모니터링용)
-        F.col("payload.type").alias("type"),
-        F.col("payload.amount").cast(dec).alias("amount"),
-        F.col("payload.nameOrig").alias("nameOrig"),
-        F.col("payload.oldbalanceOrg").cast(dec).alias("oldbalanceOrg"),
-        F.col("payload.newbalanceOrig").cast(dec).alias("newbalanceOrig"),
-        F.col("payload.nameDest").alias("nameDest"),
-        F.col("payload.oldbalanceDest").cast(dec).alias("oldbalanceDest"),
-        F.col("payload.newbalanceDest").cast(dec).alias("newbalanceDest"),
-        F.col("payload.isFraud").cast("int").alias("isFraud"),
-        F.col("payload.isFlaggedFraud").cast("int").alias("isFlaggedFraud"),
+        kafka_ts.alias("kafka_timestamp"),       # 적재 시각 (운영 모니터링용)
+        F.col("type").alias("type"),
+        F.col("amount").cast(dec).alias("amount"),
+        F.col("nameOrig").alias("nameOrig"),
+        F.col("oldbalanceOrg").cast(dec).alias("oldbalanceOrg"),
+        F.col("newbalanceOrig").cast(dec).alias("newbalanceOrig"),
+        F.col("nameDest").alias("nameDest"),
+        F.col("oldbalanceDest").cast(dec).alias("oldbalanceDest"),
+        F.col("newbalanceDest").cast(dec).alias("newbalanceDest"),
+        F.col("isFraud").cast("int").alias("isFraud"),
+        F.col("isFlaggedFraud").cast("int").alias("isFlaggedFraud"),
         is_susp.alias("is_suspicious"),
     )
 
-    # ── Step 5b: Model 2 — 지정된 tx_date 1일치만 선택 (멱등 일별 증분) ──
-    # 정합성 검증(Step 4)은 전체 Bronze 기준으로 이미 수행됨(파싱 무손실 확인).
+    # ── Step 4b: Model 2 — 지정된 tx_date 1일치만 선택 (멱등 일별 증분) ──
+    # 정합성 검증(Step 3)은 전체 Bronze 기준으로 이미 수행됨(파싱 무손실 확인).
     # 여기서는 "기록 대상"만 해당 날짜로 좁힌다 → dynamic overwrite가 그 파티션만 덮어씀.
     if TARGET_TX_DATE:
         silver_df = silver_df.filter(
@@ -176,29 +186,35 @@ def main() -> None:
         )
         print(f"[silver] TARGET_TX_DATE={TARGET_TX_DATE} → 해당 일자만 기록")
 
-    # ── Step 6: dedup (Spark 재시작으로 인한 Bronze→Silver 중복 흡수) ────
+    # ── Step 5: dedup (Kafka Connect at-least-once로 인한 Bronze 중복 흡수) ──
     pre_dedup_count = silver_df.count()          # (날짜 필터 적용 후) 기록 후보 수
     silver_df       = silver_df.dropDuplicates(["row_id"])
     silver_count    = silver_df.count()
     dedup_removed   = pre_dedup_count - silver_count
 
-    # ── Step 7: Silver 저장 (dynamic overwrite, 멱등) ────────────────────
+    # ── Step 6: Silver 저장 (dynamic overwrite, 멱등) ────────────────────
     silver_df.write \
         .mode("overwrite") \
         .partitionBy("tx_date") \
         .parquet(SILVER_PATH)
 
-    # ── Step 8: Quarantine 저장 (dynamic overwrite, 멱등) ────────────────
-    # 원본 value 보존 + reject_reason + ingest_date 파티션
+    # ── Step 7: Quarantine 저장 (dynamic overwrite, 멱등) ────────────────
+    # 원본 payload 필드를 JSON으로 재구성해 value 컬럼으로 보존(평탄 스키마라 원본
+    # value 문자열 컬럼이 더 이상 없음) + reject_reason + ingest_date 파티션.
+    payload_cols = [f.name for f in PAYLOAD_SCHEMA.fields]
     quarantine \
-        .select("value", "kafka_timestamp", "reject_reason") \
+        .select(
+            F.to_json(F.struct(*payload_cols)).alias("value"),
+            kafka_ts.alias("kafka_timestamp"),
+            "reject_reason",
+        ) \
         .withColumn("ingest_date", F.to_date(F.col("kafka_timestamp"))) \
         .write \
         .mode("overwrite") \
         .partitionBy("ingest_date") \
         .parquet(SILVER_QUAR_PATH)
 
-    # ── Step 9: 완료 출력 ────────────────────────────────────────────────
+    # ── Step 8: 완료 출력 ────────────────────────────────────────────────
     suspicious_count = silver_df.filter("is_suspicious").count()
     print(f"[silver] bronze={bronze_count}")
     print(f"[silver] valid_raw={valid_raw_count}  quarantine={quar_count}  dedup_removed={dedup_removed}")

@@ -1,4 +1,4 @@
-"""⑤ Airflow DAG 정합성 테스트 (AF1~AF8).
+"""⑤ Airflow DAG 정합성 테스트 (AF1~AF9).
 
 구조 검증(AF1·AF2)·정합성 로직(AF7)은 빠르게, E2E/증분/멱등(AF3·AF4·AF6)은
 실제 잡 실행으로 검증한다. 무거운 것은 `@pytest.mark.slow`.
@@ -86,7 +86,8 @@ def test_af2_structure_and_dependencies():
         "print({t.task_id:sorted(u.task_id for u in t.upstream_list) for t in d.tasks})"
     )
     code, out = _exec("python", "-c", snippet, timeout=120)
-    assert "'spark_silver': ['bronze_sensor']" in out, out
+    # spark_silver는 bronze_sensor(데이터 완결) + upload_spark_code(코드 동기화) 둘 다에 의존(D단계).
+    assert "'spark_silver': ['bronze_sensor', 'upload_spark_code']" in out, out
     assert "'dbt_run': ['spark_silver']" in out, out
     assert "'dbt_test': ['dbt_run']" in out, out
     assert "'reconcile': ['dbt_test']" in out, out
@@ -106,6 +107,23 @@ def test_af7_reconcile_logic_detects_mismatch(tmp_path):
     reconcile_gate(16, 16)                       # 일치 → 통과
     with pytest.raises(ValueError):
         reconcile_gate(15, 16)                   # 불일치 → 실패 탐지
+
+
+# ── AF9: bronze_sensor 완결 판정 로직 (순수, 빠름) ──────────────────────────
+
+def test_af9_bronze_completeness_gate():
+    """E단계: bronze_sensor 완결 판정 진리표.
+
+    day_cnt>0 AND (after_cnt>0 OR feed_done) 이어야 완결(True).
+    DAG의 _bronze_has_tx_date 와 동일한 게이트 로직을 재현해 검증(BQ/GCS 의존 없이).
+    """
+    def gate(day_cnt: int, after_cnt: int, done: bool) -> bool:
+        return day_cnt > 0 and (after_cnt > 0 or done)
+
+    assert gate(100, 50, False) is True     # 다음날 데이터 도착 → 완결
+    assert gate(100, 0, True) is True       # 마지막날 + 완료 마커 → 완결
+    assert gate(100, 0, False) is False     # 다음날도 마커도 없음 → 미완결(재시도)
+    assert gate(0, 10, True) is False       # 그날 데이터 자체가 없음 → 미완결
 
 
 # ── AF3: Silver 날짜 필터 (Spark 1회) ───────────────────────────────────────

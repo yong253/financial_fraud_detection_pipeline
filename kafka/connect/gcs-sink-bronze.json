@@ -1,0 +1,32 @@
+{
+  "connector.class": "io.confluent.connect.gcs.GcsSinkConnector",
+  "tasks.max": "3",
+  "topics": "transactions",
+  "gcs.bucket.name": "financial-pipeline-501007-bronze",
+  "gcs.credentials.path": "/credentials/service_account.json",
+
+  "confluent.topic.bootstrap.servers": "kafka1:29092,kafka2:29092,kafka3:29092",
+  "confluent.topic.replication.factor": "3",
+
+  "storage.class": "io.confluent.connect.gcs.storage.GcsStorage",
+  "format.class": "io.confluent.connect.gcs.format.json.JsonFormat",
+
+  "value.converter": "org.apache.kafka.connect.json.JsonConverter",
+  "value.converter.schemas.enable": "false",
+  "key.converter": "org.apache.kafka.connect.storage.StringConverter",
+  "schema.compatibility": "NONE",
+
+  "partitioner.class": "io.confluent.connect.storage.partitioner.TimeBasedPartitioner",
+  "partition.duration.ms": "86400000",
+  "path.format": "'date'=yyyy-MM-dd",
+  "locale": "en-US",
+  "timezone": "UTC",
+  "timestamp.extractor": "Record",
+
+  "flush.size": "1000",
+  "rotate.schedule.interval.ms": "60000",
+
+  "transforms": "insertTs",
+  "transforms.insertTs.type": "org.apache.kafka.connect.transforms.InsertField$Value",
+  "transforms.insertTs.timestamp.field": "kafka_timestamp"
+}

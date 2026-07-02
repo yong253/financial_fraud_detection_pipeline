@@ -72,6 +72,9 @@ x-airflow-common: &airflow-common
     GCP_PROJECT_ID: ${GCP_PROJECT_ID:-financial-pipeline-501007}
     BQ_DATASET_SILVER: ${BQ_DATASET_SILVER:-fraud_silver}
     BQ_DATASET_GOLD: ${BQ_DATASET_GOLD:-fraud_gold}
+    # ── E단계: bronze_sensor GCS/BQ 센싱용 ──
+    BQ_DATASET_BRONZE: ${BQ_DATASET_BRONZE:-fraud_bronze}
+    FEED_DONE_URI: ${FEED_DONE_URI:-gs://financial-pipeline-501007-staging/_feed/ALL_DONE}
     GOOGLE_APPLICATION_CREDENTIALS: /opt/airflow/project/credentials/service_account.json
     # ── D단계: Dataproc 제출(DataprocCreateBatchOperator) + GCS 코드 업로드용 ──
     GCP_REGION: ${GCP_REGION:-asia-northeast3}
@@ -152,6 +155,72 @@ services:
           --config unclean.leader.election.enable=false
         echo "=== transactions 토픽 상세 (RF/ISR/min.insync 확인) ==="
         kafka-topics --bootstrap-server kafka1:29092 --describe --topic transactions
+    networks:
+      - fraud-net
+
+  # ── E단계 수집: Kafka Connect + GCS Sink (상시 인제스트, DAG 밖) ──────────
+  # 기동: docker compose -f docker/docker-compose.yml --profile connect up -d --build
+  # profile=connect 전용(기본 up엔 안 뜸) — SA 키 없는 개발 환경 크래시 방지.
+  kafka-connect:
+    build:
+      context: ${HOST_PROJECT_DIR:-..}/kafka/connect
+      dockerfile: Dockerfile
+    image: fraud-connect:local
+    container_name: kafka-connect
+    profiles: ["connect"]
+    restart: unless-stopped
+    depends_on:
+      kafka1:
+        condition: service_healthy
+      kafka2:
+        condition: service_healthy
+      kafka3:
+        condition: service_healthy
+    ports:
+      - "8083:8083"
+    environment:
+      CONNECT_BOOTSTRAP_SERVERS: "kafka1:29092,kafka2:29092,kafka3:29092"
+      CONNECT_GROUP_ID: "fraud-connect"
+      CONNECT_REST_ADVERTISED_HOST_NAME: "kafka-connect"
+      CONNECT_CONFIG_STORAGE_TOPIC: "_connect-configs"
+      CONNECT_OFFSET_STORAGE_TOPIC: "_connect-offsets"
+      CONNECT_STATUS_STORAGE_TOPIC: "_connect-status"
+      # 정합성: 내부 토픽도 RF=3(브로커 1대 장애에도 커넥터 상태/오프셋 무손실)
+      CONNECT_CONFIG_STORAGE_REPLICATION_FACTOR: 3
+      CONNECT_OFFSET_STORAGE_REPLICATION_FACTOR: 3
+      CONNECT_STATUS_STORAGE_REPLICATION_FACTOR: 3
+      CONNECT_KEY_CONVERTER: "org.apache.kafka.connect.storage.StringConverter"
+      CONNECT_VALUE_CONVERTER: "org.apache.kafka.connect.json.JsonConverter"
+      CONNECT_VALUE_CONVERTER_SCHEMAS_ENABLE: "false"
+      CONNECT_PLUGIN_PATH: "/usr/share/java,/usr/share/confluent-hub-components"
+      GOOGLE_APPLICATION_CREDENTIALS: /credentials/service_account.json
+    volumes:
+      - ${HOST_PROJECT_DIR:-..}/credentials:/credentials:ro
+    networks:
+      - fraud-net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8083/connectors"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 60s
+
+  # gcs-sink-bronze 커넥터를 1회 등록(REST PUT) 후 종료. PUT은 멱등 — 재실행해도 config 갱신만.
+  connect-init:
+    image: curlimages/curl:latest
+    container_name: connect-init
+    profiles: ["connect"]
+    depends_on:
+      kafka-connect:
+        condition: service_healthy
+    volumes:
+      - ${HOST_PROJECT_DIR:-..}/kafka/connect:/config:ro
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        curl -sS -X PUT -H "Content-Type: application/json" \
+          --data @/config/gcs-sink-bronze.json \
+          http://kafka-connect:8083/connectors/gcs-sink-bronze/config
     networks:
       - fraud-net
 

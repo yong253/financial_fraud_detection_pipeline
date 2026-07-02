@@ -1,7 +1,6 @@
 # 시크릿 / 환경변수
 .env
 credentials/
-*.json
 !dbt/profiles.yml
 TODO.md
 

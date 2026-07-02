@@ -82,6 +82,7 @@ KAFKA_TOPIC=transactions
 - 파이프라인은 GCP 기반으로 재현 가능해야 한다 (gcloud + 서비스계정 키). 웨어하우스는 BigQuery 단일 — 로컬 임시 대체재(DuckDB)는 제거됨
 - **전 컴포넌트는 무손실 + 무중복으로 설정한다**: Kafka RF=3·min.insync=2·unclean.leader.election=false·멱등 Producer(acks=all), Spark checkpoint·멱등 재처리(partitionOverwrite dynamic)·dedup 키, Airflow 멱등 태스크. 금액은 float 드리프트 방지 위해 문자열/decimal 직렬화. (설정 기준: `TODO.md` "컴포넌트별 정합성 설정")
 - **95% 이상 확실하지 않은 결정/가정은 임의로 진행하지 않는다.** 진행 전 사용자에게 확인하고 확정한다.
+- **모든 코드/설정 수정 후에는 반드시 해당 변경을 검증하는 테스트(단위테스트, `airflow dags test`, 수동 확인 등) 단계를 수행한다.** 수정만 하고 검증 없이 다음 단계로 넘어가지 않는다.
 
 ---
 

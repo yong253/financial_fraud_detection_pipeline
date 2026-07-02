@@ -1,8 +1,8 @@
 """⑤ Fraud Pipeline DAG — Bronze→Silver→Gold 이벤트시간 일별 증분 배치.
 
 설계(사용자 확정):
-  - DAG 스코프 = 배치만. Kafka→Bronze 적재(Spark Streaming, 과도기)는 DAG 밖.
-    → DAG는 Bronze 스토리지에서 출발하므로, 향후 Kafka Connect GCS Sink로 교체해도 DAG 불변.
+  - DAG 스코프 = 배치만. Kafka→Bronze 적재(Kafka Connect GCS Sink, E단계)는 DAG 밖.
+    → DAG는 Bronze 스토리지(GCS/BQ)에서 출발하므로 적재 방식 교체와 무관(불변).
   - 처리 모델 = Model 2(이벤트시간 일별 증분): run 1개 = tx_date 하루치({{ ds }}).
     start_date=2016-01-01 + catchup=True 로 데이터셋 30일 구간을 하루씩 백필.
     (end_date로 한정 — 안 그러면 현재까지 수천 run 생성됨. PaySim=744 step≈31일.)
@@ -14,7 +14,6 @@
 """
 from __future__ import annotations
 
-import glob
 import os
 from datetime import datetime, timedelta
 
@@ -25,20 +24,24 @@ from airflow.sensors.python import PythonSensor
 from airflow.providers.google.cloud.operators.dataproc import DataprocCreateBatchOperator
 from airflow.providers.google.cloud.transfers.local_to_gcs import LocalFilesystemToGCSOperator
 
-# 컨테이너 내부 경로 (Bronze 센싱은 아직 로컬 — E단계에서 GCS 전환 예정)
-DATALAKE     = "/datalake"
-BRONZE_GLOB  = f"{DATALAKE}/bronze/**/*.parquet"
-FEED_DONE    = f"{DATALAKE}/_feed/ALL_DONE"   # producer --realtime 종료 마커(마지막날 완결 신호)
-STEP_EPOCH   = "2016-01-01 00:00:00"          # batch_silver 와 동일 기준(step→tx_date)
+STEP_EPOCH = "2016-01-01 00:00:00"   # batch_silver 와 동일 기준(step→tx_date)
 
-# 단일 웨어하우스 = BigQuery. reconcile/push_metrics 가 fraud_gold/fraud_silver 조회.
+# 단일 웨어하우스 = BigQuery. reconcile/push_metrics/bronze_sensor 가 fraud_bronze/fraud_silver/fraud_gold 조회.
 GCP_PROJECT_ID    = os.getenv("GCP_PROJECT_ID", "financial-pipeline-501007")
+BQ_DATASET_BRONZE = os.getenv("BQ_DATASET_BRONZE", "fraud_bronze")
 BQ_DATASET_SILVER = os.getenv("BQ_DATASET_SILVER", "fraud_silver")
 BQ_DATASET_GOLD   = os.getenv("BQ_DATASET_GOLD", "fraud_gold")
+BQ_BRONZE     = f"`{GCP_PROJECT_ID}.{BQ_DATASET_BRONZE}.bronze_transactions`"
 BQ_SILVER     = f"`{GCP_PROJECT_ID}.{BQ_DATASET_SILVER}.silver_transactions`"
 BQ_UNDETECTED = f"`{GCP_PROJECT_ID}.{BQ_DATASET_GOLD}.undetected_fraud`"
 BQ_ACCOUNT    = f"`{GCP_PROJECT_ID}.{BQ_DATASET_GOLD}.account_risk`"
 BQ_HOURLY     = f"`{GCP_PROJECT_ID}.{BQ_DATASET_GOLD}.hourly_summary`"
+
+# E단계: producer --realtime 마지막 날 완결 마커(GCS). Bronze 버킷(JSON 전용) 오염 방지 위해
+# staging 버킷에 둔다.
+FEED_DONE_URI = os.getenv(
+    "FEED_DONE_URI", "gs://financial-pipeline-501007-staging/_feed/ALL_DONE"
+)
 
 # D단계: Dataproc Serverless 제출(spark_silver)용
 GCP_REGION         = os.getenv("GCP_REGION", "asia-northeast3")
@@ -65,41 +68,43 @@ default_args = {
 }
 
 
+def _gcs_object_exists(gs_uri: str) -> bool:
+    """gs://bucket/path 오브젝트 존재 확인 (FEED_DONE 마커용)."""
+    from google.cloud import storage
+
+    bucket_name, _, blob_name = gs_uri[len("gs://"):].partition("/")
+    return storage.Client(project=GCP_PROJECT_ID).bucket(bucket_name).blob(blob_name).exists()
+
+
 def _bronze_has_tx_date(ds: str) -> bool:
     """day-by-day 실시간 흐름: 해당 tx_date 데이터가 Bronze에 '완결 도착'했는지 센싱.
 
-    Bronze는 원본 JSON(value)만 보존(ingest 파티션) → step을 파싱해 이벤트시간 tx_date 계산.
-    완결 판정(워터마크): 그날 데이터 존재 AND (다음날 데이터도 도착 OR 피드 완료 마커).
+    E단계: Bronze는 Kafka Connect GCS Sink가 쓰는 BigQuery 외부테이블(fraud_bronze)로 조회.
+    step을 파싱해 이벤트시간 tx_date 계산. 완결 판정(워터마크)은 기존과 동일:
+    그날 데이터 존재 AND (다음날 데이터도 도착 OR 피드 완료 마커).
       - 다음날이 Bronze에 보이면 = Kafka 오프셋 순서상 그날은 이미 전부 도착(완결).
-      - 마지막날은 다음날이 없으므로 producer가 남긴 FEED_DONE 마커로 완결 판정.
-    스트리밍이 동시에 쓰는 중 읽기 실패는 False 반환 → 다음 poke 재시도.
+      - 마지막날은 다음날이 없으므로 producer가 남긴 FEED_DONE_URI 마커로 완결 판정.
+    Kafka Connect가 동시에 쓰는 중 조회 실패(하이브 파티션 미매칭 등)는 False 반환 → 재시도.
     """
-    import os
-
-    import duckdb
-
-    if not glob.glob(BRONZE_GLOB, recursive=True):
-        return False
     try:
-        day_cnt, after_cnt = duckdb.connect().execute(
+        day_cnt, after_cnt = _bq_query(
             f"""
             WITH b AS (
-                SELECT (TIMESTAMP '{STEP_EPOCH}'
-                        + (CAST(json_extract_string(value, '$.step') AS BIGINT) - 1)
-                          * INTERVAL 1 HOUR)::DATE AS tx_date
-                FROM read_parquet('{BRONZE_GLOB}')
+              SELECT DATE(TIMESTAMP_ADD(TIMESTAMP '{STEP_EPOCH}',
+                     INTERVAL (CAST(step AS INT64) - 1) HOUR)) AS tx_date
+              FROM {BQ_BRONZE}
             )
             SELECT
-                COALESCE(SUM(CASE WHEN tx_date = DATE '{ds}' THEN 1 ELSE 0 END), 0),
-                COALESCE(SUM(CASE WHEN tx_date > DATE '{ds}' THEN 1 ELSE 0 END), 0)
+              COALESCE(SUM(CASE WHEN tx_date = DATE '{ds}' THEN 1 ELSE 0 END), 0),
+              COALESCE(SUM(CASE WHEN tx_date > DATE '{ds}' THEN 1 ELSE 0 END), 0)
             FROM b
             """
-        ).fetchone()
-    except Exception as e:  # 스트리밍 동시 쓰기 등 일시적 읽기 실패 → 재시도
-        print(f"[bronze_sensor] ds={ds} Bronze 읽기 일시 실패: {e} → 다음 poke 재시도")
+        )[0]
+    except Exception as e:  # 하이브 파티션 미매칭(빈 버킷) 등 일시적 조회 실패 → 다음 poke 재시도
+        print(f"[bronze_sensor] ds={ds} Bronze 조회 일시 실패: {e} → 다음 poke 재시도")
         return False
 
-    done = os.path.exists(FEED_DONE)
+    done = _gcs_object_exists(FEED_DONE_URI)
     ok = day_cnt > 0 and (after_cnt > 0 or done)
     print(f"[bronze_sensor] ds={ds} day_cnt={day_cnt} after_cnt={after_cnt} feed_done={done} → {ok}")
     return ok
@@ -261,7 +266,10 @@ with DAG(
             "pyspark_batch": {
                 "main_python_file_uri": SPARK_CODE_URI,
                 "args": [
-                    f"--bronze-path=gs://{GCS_BUCKET_BRONZE}",
+                    # topics/transactions = Kafka Connect GCS Sink 실제 적재 경로(topics.dir=topics
+                    # 기본값). 버킷 루트를 그대로 읽으면 과거 스모크테스트 잔여물과 파티션 구조가
+                    # 충돌해 Spark가 "Conflicting directory structures" 로 실패한다(실측 확인).
+                    f"--bronze-path=gs://{GCS_BUCKET_BRONZE}/topics/transactions",
                     f"--silver-path=gs://{GCS_BUCKET_SILVER}",
                     "--target-tx-date={{ ds }}",
                 ],
