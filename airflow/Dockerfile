@@ -16,5 +16,10 @@ RUN apt-get update \
  && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 USER airflow
-# duckdb: reconcile/push_metrics 의 Gold/Silver 조회용. prometheus_client: ⑥ Pushgateway push 용.
-RUN pip install --no-cache-dir duckdb==1.1.0 prometheus_client==0.20.0
+# apache-airflow-providers-google: DataprocCreateBatchOperator + LocalFilesystemToGCSOperator + BQ/GCS 훅
+#   (google-cloud-bigquery/dataproc/storage 포함 → reconcile/push_metrics의 BQ 조회도 커버).
+#   airflow 2.9.3 constraints 로 버전 정합성 확보(단독 설치 시 의존성 충돌 방지).
+RUN pip install --no-cache-dir "apache-airflow-providers-google" \
+    --constraint "https://raw.githubusercontent.com/apache/airflow/constraints-2.9.3/constraints-3.12.txt"
+# prometheus_client: ⑥ Pushgateway push. duckdb: bronze_sensor 전용(E단계에서 제거 예정).
+RUN pip install --no-cache-dir prometheus_client==0.20.0 duckdb==1.1.0

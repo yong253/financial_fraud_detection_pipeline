@@ -14,6 +14,7 @@ models:
         data_tests:
           - accepted_values:
               values: [true]
+              quote: false   # BOOL 컬럼 → 'true'(문자열) 대신 true(리터럴)로 비교. BigQuery 엄격성 대응(DuckDB도 호환)
       - name: type
         description: "사기는 CASH_OUT/TRANSFER 유형에서만 발생"
         data_tests:

@@ -42,8 +42,8 @@ Bronze → Spark Batch → Silver → DBT → Gold → Grafana
   Kafka 인제스트 → kafka-exporter ─┐
   Airflow 운영(StatsD) → statsd-exporter ─┼→ Prometheus → Grafana(단일 데이터소스)
   배치 records + 사기 KPI → DAG가 Pushgateway로 push ─┘
-  ※ Gold(DuckDB)는 Grafana 네이티브 미지원 → DAG push_metrics 태스크가 집계 카운트를
-    Pushgateway(Prometheus 게이지)로 전송. 상세 행 대신 Top-N/카운트 게이지로 표현.
+  ※ Gold(BigQuery)는 Grafana 대시보드에 직접 붙일 수도 있으나, 상세 행 대신 Top-N/카운트 게이지로
+    표현하기 위해 DAG push_metrics 태스크가 집계 카운트를 Pushgateway(Prometheus 게이지)로 전송.
   기동: docker compose -f docker/docker-compose.yml --profile monitoring up -d
   포트: Prometheus 9090 / Pushgateway 9091 / Grafana 3000(admin/admin) / kafka-exporter 9308 / statsd-exporter 9102
 ```
@@ -143,7 +143,7 @@ KAFKA_TOPIC=transactions
 - Bronze 레이어 데이터는 절대 수정하지 않는다
 - Quarantine으로 격리된 데이터는 삭제하지 않고 보존한다
 - DBT 모델에는 `not_null`, `unique` 테스트를 반드시 작성한다
-- Docker Compose로 로컬에서 전체 파이프라인이 재현 가능해야 한다
+- 파이프라인은 GCP 기반으로 재현 가능해야 한다 (gcloud + 서비스계정 키). 웨어하우스는 BigQuery 단일 — 로컬 임시 대체재(DuckDB)는 제거됨
 - **전 컴포넌트는 무손실 + 무중복으로 설정한다**: Kafka RF=3·min.insync=2·unclean.leader.election=false·멱등 Producer(acks=all), Spark checkpoint·멱등 재처리(partitionOverwrite dynamic)·dedup 키, Airflow 멱등 태스크. 금액은 float 드리프트 방지 위해 문자열/decimal 직렬화. (설정 기준: `TODO.md` "컴포넌트별 정합성 설정")
 - **95% 이상 확실하지 않은 결정/가정은 임의로 진행하지 않는다.** 진행 전 사용자에게 확인하고 확정한다.
 

@@ -15,20 +15,39 @@
 from __future__ import annotations
 
 import glob
+import os
 from datetime import datetime, timedelta
 
 from airflow import DAG
 from airflow.operators.bash import BashOperator
 from airflow.operators.python import PythonOperator
 from airflow.sensors.python import PythonSensor
+from airflow.providers.google.cloud.operators.dataproc import DataprocCreateBatchOperator
+from airflow.providers.google.cloud.transfers.local_to_gcs import LocalFilesystemToGCSOperator
 
-# 컨테이너 내부 경로 (airflow 서비스에 마운트됨)
+# 컨테이너 내부 경로 (Bronze 센싱은 아직 로컬 — E단계에서 GCS 전환 예정)
 DATALAKE     = "/datalake"
 BRONZE_GLOB  = f"{DATALAKE}/bronze/**/*.parquet"
-SILVER_GLOB  = f"{DATALAKE}/silver/tx_date=*/**/*.parquet"
-WAREHOUSE    = f"{DATALAKE}/warehouse.duckdb"
 FEED_DONE    = f"{DATALAKE}/_feed/ALL_DONE"   # producer --realtime 종료 마커(마지막날 완결 신호)
 STEP_EPOCH   = "2016-01-01 00:00:00"          # batch_silver 와 동일 기준(step→tx_date)
+
+# 단일 웨어하우스 = BigQuery. reconcile/push_metrics 가 fraud_gold/fraud_silver 조회.
+GCP_PROJECT_ID    = os.getenv("GCP_PROJECT_ID", "financial-pipeline-501007")
+BQ_DATASET_SILVER = os.getenv("BQ_DATASET_SILVER", "fraud_silver")
+BQ_DATASET_GOLD   = os.getenv("BQ_DATASET_GOLD", "fraud_gold")
+BQ_SILVER     = f"`{GCP_PROJECT_ID}.{BQ_DATASET_SILVER}.silver_transactions`"
+BQ_UNDETECTED = f"`{GCP_PROJECT_ID}.{BQ_DATASET_GOLD}.undetected_fraud`"
+BQ_ACCOUNT    = f"`{GCP_PROJECT_ID}.{BQ_DATASET_GOLD}.account_risk`"
+BQ_HOURLY     = f"`{GCP_PROJECT_ID}.{BQ_DATASET_GOLD}.hourly_summary`"
+
+# D단계: Dataproc Serverless 제출(spark_silver)용
+GCP_REGION         = os.getenv("GCP_REGION", "asia-northeast3")
+GCS_BUCKET_BRONZE  = os.getenv("GCS_BUCKET_BRONZE", "financial-pipeline-501007-bronze")
+GCS_BUCKET_SILVER  = os.getenv("GCS_BUCKET_SILVER", "financial-pipeline-501007-silver")
+GCS_BUCKET_STAGING = os.getenv("GCS_BUCKET_STAGING", "financial-pipeline-501007-staging")
+GCP_SA_EMAIL       = os.getenv("GCP_SA_EMAIL", "financial-service@financial-pipeline-501007.iam.gserviceaccount.com")
+DATAPROC_RUNTIME   = "2.2"
+SPARK_CODE_URI     = f"gs://{GCS_BUCKET_STAGING}/code/batch_silver.py"
 
 PROJECT_DIR  = "/opt/airflow/project"
 COMPOSE      = "docker compose -f docker/docker-compose.yml"
@@ -86,18 +105,20 @@ def _bronze_has_tx_date(ds: str) -> bool:
     return ok
 
 
+def _bq_query(sql: str):
+    """BigQuery 조회 → 행 리스트(튜플). 인증은 GOOGLE_APPLICATION_CREDENTIALS(SA 키)."""
+    from google.cloud import bigquery
+
+    client = bigquery.Client(project=GCP_PROJECT_ID)
+    return [tuple(row.values()) for row in client.query(sql).result()]
+
+
 def _reconcile() -> None:
     """누적 불변식: Gold undetected_fraud 행수 == Silver is_suspicious 행수. 불일치 시 실패."""
-    import duckdb
-
-    con = duckdb.connect(WAREHOUSE, read_only=True)
-    gold = con.execute("SELECT count(*) FROM undetected_fraud").fetchone()[0]
-    con.close()
-
-    silver = duckdb.connect().execute(
-        f"SELECT count(*) FROM read_parquet('{SILVER_GLOB}', hive_partitioning=true) "
-        f"WHERE is_suspicious"
-    ).fetchone()[0]
+    gold = _bq_query(f"SELECT count(*) FROM {BQ_UNDETECTED}")[0][0]
+    silver = _bq_query(
+        f"SELECT count(*) FROM {BQ_SILVER} WHERE is_suspicious"
+    )[0][0]
 
     print(f"[reconcile] undetected_fraud={gold}  silver_is_suspicious={silver}")
     if gold != silver:
@@ -116,17 +137,16 @@ def _push_metrics(ds: str) -> None:
     """
     import time
 
-    import duckdb
     from prometheus_client import CollectorRegistry, Gauge, pushadd_to_gateway
 
     # ── 1) 그날 1일치 Silver 집계(이벤트시간 tx_date 파티션) ──
-    day = duckdb.connect().execute(
+    day = _bq_query(
         f"SELECT count(*), "
-        f"       COALESCE(SUM(CASE WHEN \"isFraud\"=1 THEN 1 ELSE 0 END),0), "
+        f"       COALESCE(SUM(CASE WHEN isFraud=1 THEN 1 ELSE 0 END),0), "
         f"       COALESCE(SUM(CASE WHEN is_suspicious THEN 1 ELSE 0 END),0) "
-        f"FROM read_parquet('{SILVER_GLOB}', hive_partitioning=true) "
-        f"WHERE CAST(tx_date AS VARCHAR) = '{ds}'"
-    ).fetchone()
+        f"FROM {BQ_SILVER} "
+        f"WHERE tx_date = DATE '{ds}'"
+    )[0]
     day_rows, day_fraud, day_undetected = (day[0] or 0), (day[1] or 0), (day[2] or 0)
 
     day_reg = CollectorRegistry()
@@ -138,30 +158,28 @@ def _push_metrics(ds: str) -> None:
     )
 
     # ── 2) 전역 누적 KPI(Gold) ──
-    con = duckdb.connect(WAREHOUSE, read_only=True)
-    undetected_total = con.execute("SELECT count(*) FROM undetected_fraud").fetchone()[0]
-    top_accounts = con.execute(
-        "SELECT account_id, fraud_amount FROM account_risk "
-        "ORDER BY fraud_amount DESC LIMIT ?", [TOP_N_ACCOUNTS]
-    ).fetchall()
-    hourly = con.execute(
-        "SELECT EXTRACT(hour FROM tx_hour) AS h, SUM(tx_count), SUM(fraud_count) "
-        "FROM hourly_summary GROUP BY 1 ORDER BY 1"
-    ).fetchall()
-    con.close()
+    undetected_total = _bq_query(f"SELECT count(*) FROM {BQ_UNDETECTED}")[0][0]
+    top_accounts = _bq_query(
+        f"SELECT account_id, fraud_amount FROM {BQ_ACCOUNT} "
+        f"ORDER BY fraud_amount DESC LIMIT {TOP_N_ACCOUNTS}"
+    )
+    hourly = _bq_query(
+        f"SELECT EXTRACT(hour FROM tx_hour) AS h, SUM(tx_count), SUM(fraud_count) "
+        f"FROM {BQ_HOURLY} GROUP BY 1 ORDER BY 1"
+    )
 
     # ── 기존 룰 시스템(isFlaggedFraud) 혼동행렬 — 탐지 성능 검증 KPI ──
     #   actual=실제사기, flagged=기존룰 탐지, tp=맞춘것, fp=오탐, fn=놓침(=is_suspicious=미탐지)
     #   Silver 1회 스캔으로 누적 집계(전역). PaySim은 flagged가 극히 드묾 → recall≈0(스토리).
-    cm = duckdb.connect().execute(
+    cm = _bq_query(
         f"SELECT "
-        f"  COALESCE(SUM(CASE WHEN \"isFraud\"=1 THEN 1 ELSE 0 END),0), "
-        f"  COALESCE(SUM(CASE WHEN \"isFlaggedFraud\"=1 THEN 1 ELSE 0 END),0), "
-        f"  COALESCE(SUM(CASE WHEN \"isFraud\"=1 AND \"isFlaggedFraud\"=1 THEN 1 ELSE 0 END),0), "
-        f"  COALESCE(SUM(CASE WHEN \"isFraud\"=0 AND \"isFlaggedFraud\"=1 THEN 1 ELSE 0 END),0), "
+        f"  COALESCE(SUM(CASE WHEN isFraud=1 THEN 1 ELSE 0 END),0), "
+        f"  COALESCE(SUM(CASE WHEN isFlaggedFraud=1 THEN 1 ELSE 0 END),0), "
+        f"  COALESCE(SUM(CASE WHEN isFraud=1 AND isFlaggedFraud=1 THEN 1 ELSE 0 END),0), "
+        f"  COALESCE(SUM(CASE WHEN isFraud=0 AND isFlaggedFraud=1 THEN 1 ELSE 0 END),0), "
         f"  COALESCE(SUM(CASE WHEN is_suspicious THEN 1 ELSE 0 END),0) "
-        f"FROM read_parquet('{SILVER_GLOB}', hive_partitioning=true)"
-    ).fetchone()
+        f"FROM {BQ_SILVER}"
+    )[0]
     actual, flagged, tp, fp, fn = (cm[0], cm[1], cm[2], cm[3], cm[4])
     precision = (tp / flagged) if flagged else 0.0   # 탐지한 것 중 진짜 사기 비율
     recall    = (tp / actual) if actual else 0.0      # 실제 사기 중 잡은 비율
@@ -224,12 +242,35 @@ with DAG(
         execution_timeout=timedelta(hours=2),  # default_args의 30m가 센서를 죽이지 않도록 상향
     )
 
-    # {{ ds }} = 논리 날짜 = 처리할 tx_date. f-string 아님(Airflow 템플릿 보존).
-    spark_silver = BashOperator(
+    # 최신 batch_silver.py 를 GCS에 동기화 — Dataproc이 gs:// 코드를 실행하므로 스테일 방지.
+    upload_spark_code = LocalFilesystemToGCSOperator(
+        task_id="upload_spark_code",
+        src=f"{PROJECT_DIR}/spark/batch_silver.py",
+        dst="code/batch_silver.py",
+        bucket=GCS_BUCKET_STAGING,
+    )
+
+    # {{ ds }} = 처리할 tx_date. Dataproc Serverless 배치로 Bronze(gs://) → Silver(gs://).
+    # batch_id 는 시도별 유니크(재시도 시 ALREADY_EXISTS 회피). 서브넷 미지정=기본(PGA on).
+    spark_silver = DataprocCreateBatchOperator(
         task_id="spark_silver",
-        bash_command=(
-            ENV_PREFIX + COMPOSE + " run --rm -e TARGET_TX_DATE={{ ds }} spark-silver"
-        ),
+        project_id=GCP_PROJECT_ID,
+        region=GCP_REGION,
+        batch_id="silver-{{ ds_nodash }}-{{ ti.try_number }}",
+        batch={
+            "pyspark_batch": {
+                "main_python_file_uri": SPARK_CODE_URI,
+                "args": [
+                    f"--bronze-path=gs://{GCS_BUCKET_BRONZE}",
+                    f"--silver-path=gs://{GCS_BUCKET_SILVER}",
+                    "--target-tx-date={{ ds }}",
+                ],
+            },
+            "runtime_config": {"version": DATAPROC_RUNTIME},
+            "environment_config": {
+                "execution_config": {"service_account": GCP_SA_EMAIL}
+            },
+        },
     )
 
     dbt_run = BashOperator(
@@ -254,4 +295,6 @@ with DAG(
         op_kwargs={"ds": "{{ ds }}"},
     )
 
-    bronze_sensor >> spark_silver >> dbt_run >> dbt_test >> reconcile >> push_metrics
+    bronze_sensor >> spark_silver
+    upload_spark_code >> spark_silver
+    spark_silver >> dbt_run >> dbt_test >> reconcile >> push_metrics

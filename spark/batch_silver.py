@@ -11,19 +11,36 @@ Medallion Silver 규칙:
 컨테이너 실행:
   docker compose -f docker/docker-compose.yml run --rm spark-silver
 """
+import argparse
 import os
 
 from pyspark.sql import SparkSession
 from pyspark.sql import functions as F
 from pyspark.sql.types import DecimalType, StructField, StructType, StringType
 
-BRONZE_PATH      = os.getenv("BRONZE_PATH",  "/datalake/bronze")
-SILVER_PATH      = os.getenv("SILVER_PATH",  "/datalake/silver")
+
+# 설정 소스 우선순위: CLI 인자(--bronze-path 등) > 환경변수 > 기본값.
+#   - 로컬 docker: 환경변수(.env)로 주입 → 인자 없이 그대로 동작(하위호환).
+#   - Dataproc Serverless: env 주입이 어려워 스크립트 인자로 전달 (`-- --bronze-path=gs://...`).
+# parse_known_args → Spark 런타임이 붙이는 잉여 인자는 무시.
+def _parse_config():
+    p = argparse.ArgumentParser(description="Bronze→Silver Spark 배치")
+    p.add_argument("--bronze-path",    default=os.getenv("BRONZE_PATH", "/datalake/bronze"))
+    p.add_argument("--silver-path",    default=os.getenv("SILVER_PATH", "/datalake/silver"))
+    p.add_argument("--step-epoch",     default=os.getenv("STEP_EPOCH", "2016-01-01 00:00:00"))
+    p.add_argument("--target-tx-date", default=os.getenv("TARGET_TX_DATE"))
+    args, _ = p.parse_known_args()
+    return args
+
+
+_cfg = _parse_config()
+BRONZE_PATH      = _cfg.bronze_path
+SILVER_PATH      = _cfg.silver_path
 SILVER_QUAR_PATH = SILVER_PATH.rstrip("/") + "/quarantine"
-STEP_EPOCH       = os.getenv("STEP_EPOCH",   "2016-01-01 00:00:00")
+STEP_EPOCH       = _cfg.step_epoch
 # Model 2(이벤트시간 일별 증분): 지정 시 해당 tx_date 1일치 valid 행만 Silver로 기록.
 # 미지정(None)이면 전체 처리 — 기존 동작 유지(하위호환). Airflow가 {{ ds }}를 주입.
-TARGET_TX_DATE   = os.getenv("TARGET_TX_DATE")  # "YYYY-MM-DD" 또는 None
+TARGET_TX_DATE   = _cfg.target_tx_date  # "YYYY-MM-DD" 또는 None
 
 VALID_TYPES = ["PAYMENT", "TRANSFER", "CASH_OUT", "CASH_IN", "DEBIT"]
 

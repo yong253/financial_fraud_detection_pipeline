@@ -68,6 +68,19 @@ x-airflow-common: &airflow-common
     # 주의: HOST_PROJECT_DIR는 컨테이너 env로 주지 않는다. 형제 잡 실행 시 .env의 절대값이
     # shell env에 가려지면 안 되기 때문. DAG BashOperator가 .env에서 직접 export 한다.
     PROJECT_COMPOSE_DIR: /opt/airflow/project
+    # ── BigQuery(reconcile/push_metrics) 조회용. 프로젝트 마운트에 SA 키 포함 → 별도 마운트 불필요 ──
+    GCP_PROJECT_ID: ${GCP_PROJECT_ID:-financial-pipeline-501007}
+    BQ_DATASET_SILVER: ${BQ_DATASET_SILVER:-fraud_silver}
+    BQ_DATASET_GOLD: ${BQ_DATASET_GOLD:-fraud_gold}
+    GOOGLE_APPLICATION_CREDENTIALS: /opt/airflow/project/credentials/service_account.json
+    # ── D단계: Dataproc 제출(DataprocCreateBatchOperator) + GCS 코드 업로드용 ──
+    GCP_REGION: ${GCP_REGION:-asia-northeast3}
+    GCS_BUCKET_BRONZE: ${GCS_BUCKET_BRONZE:-financial-pipeline-501007-bronze}
+    GCS_BUCKET_SILVER: ${GCS_BUCKET_SILVER:-financial-pipeline-501007-silver}
+    GCS_BUCKET_STAGING: ${GCS_BUCKET_STAGING:-financial-pipeline-501007-staging}
+    GCP_SA_EMAIL: ${GCP_SA_EMAIL:-financial-service@financial-pipeline-501007.iam.gserviceaccount.com}
+    # google 프로바이더 기본 연결이 ADC(GOOGLE_APPLICATION_CREDENTIALS)를 쓰도록 — 별도 커넥션 설정 불필요
+    AIRFLOW_CONN_GOOGLE_CLOUD_DEFAULT: "google-cloud-platform://"
   volumes:
     - ${HOST_PROJECT_DIR:-..}/airflow/dags:/opt/airflow/dags
     - ${HOST_PROJECT_DIR:-..}/airflow/logs:/opt/airflow/logs
@@ -229,12 +242,16 @@ services:
     profiles: ["jobs"]
     working_dir: /dbt
     environment:
-      # 컨테이너 working_dir=/dbt 기준 ../datalake = /datalake (마운트 지점)
-      DUCKDB_PATH: "/datalake/warehouse.duckdb"
-      SILVER_PATH: "/datalake/silver"
+      # ── BigQuery 타깃용. 값은 루트 .env에서 주입(없으면 기본값) ──
+      GCP_PROJECT_ID: ${GCP_PROJECT_ID:-financial-pipeline-501007}
+      BQ_DATASET_SILVER: ${BQ_DATASET_SILVER:-fraud_silver}
+      BQ_DATASET_GOLD: ${BQ_DATASET_GOLD:-fraud_gold}
+      GCP_REGION: ${GCP_REGION:-asia-northeast3}
+      GCP_KEYFILE: /credentials/service_account.json
     volumes:
       - ${HOST_PROJECT_DIR:-..}/dbt:/dbt
       - ${HOST_PROJECT_DIR:-..}/datalake:/datalake
+      - ${HOST_PROJECT_DIR:-..}/credentials:/credentials:ro
     networks:
       - fraud-net
     command: ["run", "--profiles-dir", "."]

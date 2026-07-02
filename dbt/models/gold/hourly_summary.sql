@@ -2,7 +2,7 @@
 
 -- 시간대별 거래량/사기 집계. 거래 유형(type)별로도 분리.
 SELECT
-    DATE_TRUNC('hour', tx_timestamp)                   AS tx_hour,
+    {{ dbt.date_trunc('hour', 'tx_timestamp') }}       AS tx_hour,
     type,
     COUNT(*)                                           AS tx_count,
     SUM(amount)                                        AS total_amount,

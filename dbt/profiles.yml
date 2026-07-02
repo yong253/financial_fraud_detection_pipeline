@@ -1,11 +1,13 @@
-# 로컬 개발: DuckDB target (BigQuery 대체재)
-# GCP 전환 시: outputs에 prod(type: bigquery) 추가하고 target만 교체
-# 경로는 dbt 실행 위치(dbt/) 기준 상대경로 → ../datalake
-# dbt는 .env를 자동 로드하지 않으므로 env_var 기본값으로 동작
+# 단일 웨어하우스: BigQuery. (DuckDB는 GCP 준비 전 임시 대체재였고 제거됨 — GCP 단일화)
+# dbt는 .env를 자동 로드하지 않으므로 env_var 기본값 필수.
 fraud_dbt:
-  target: dev
+  target: prod
   outputs:
-    dev:
-      type: duckdb
-      path: "{{ env_var('DUCKDB_PATH', '../datalake/warehouse.duckdb') }}"
+    prod:
+      type: bigquery
+      method: service-account
+      project:  "{{ env_var('GCP_PROJECT_ID', 'financial-pipeline-501007') }}"
+      dataset:  "{{ env_var('BQ_DATASET_GOLD', 'fraud_gold') }}"
+      keyfile:  "{{ env_var('GCP_KEYFILE', '/credentials/service_account.json') }}"
+      location: "{{ env_var('GCP_REGION', 'asia-northeast3') }}"
       threads: 4
