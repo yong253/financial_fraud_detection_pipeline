@@ -88,7 +88,6 @@ x-airflow-common: &airflow-common
     - ${HOST_PROJECT_DIR:-..}/airflow/dags:/opt/airflow/dags
     - ${HOST_PROJECT_DIR:-..}/airflow/logs:/opt/airflow/logs
     - ${HOST_PROJECT_DIR:-..}/airflow/plugins:/opt/airflow/plugins
-    - ${HOST_PROJECT_DIR:-..}/datalake:/datalake
     - ${HOST_PROJECT_DIR:-..}:/opt/airflow/project   # compose 파일/잡 코드 접근
     - /var/run/docker.sock:/var/run/docker.sock
   networks:
@@ -244,62 +243,6 @@ services:
     networks:
       - fraud-net
 
-  # Spark Streaming 작업 (Kafka → Bronze). profile 지정으로 `up`엔 안 뜸.
-  # 실행: docker compose -f docker/docker-compose.yml run --rm spark-streaming
-  spark-streaming:
-    image: apache/spark:3.5.1
-    profiles: ["jobs"]
-    user: root  # 로컬 dev: bind-mount(/datalake) + ivy 캐시 쓰기 권한
-    depends_on:
-      kafka1:
-        condition: service_healthy
-      kafka2:
-        condition: service_healthy
-      kafka3:
-        condition: service_healthy
-    environment:
-      KAFKA_BOOTSTRAP_SERVERS: "kafka1:29092,kafka2:29092,kafka3:29092"
-      KAFKA_TOPIC: "transactions"
-      BRONZE_PATH: "/datalake/bronze"
-      CHECKPOINT_PATH: "/datalake/_checkpoints/bronze"
-    volumes:
-      - ${HOST_PROJECT_DIR:-..}/spark:/app
-      - ${HOST_PROJECT_DIR:-..}/datalake:/datalake
-      - ivy-cache:/tmp/.ivy2
-    networks:
-      - fraud-net
-    entrypoint:
-      - /opt/spark/bin/spark-submit
-    command:
-      - --packages
-      - org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.1
-      - --conf
-      - spark.jars.ivy=/tmp/.ivy2
-      - /app/streaming_bronze.py
-
-  # Spark Batch 작업 (Bronze → Silver). profile 지정으로 `up`엔 안 뜸.
-  # 실행: docker compose -f docker/docker-compose.yml run --rm spark-silver
-  spark-silver:
-    image: apache/spark:3.5.1
-    profiles: ["jobs"]
-    user: root
-    environment:
-      BRONZE_PATH: "/datalake/bronze"
-      SILVER_PATH: "/datalake/silver"
-      STEP_EPOCH: "2016-01-01 00:00:00"
-    volumes:
-      - ${HOST_PROJECT_DIR:-..}/spark:/app
-      - ${HOST_PROJECT_DIR:-..}/datalake:/datalake
-      - ivy-cache:/tmp/.ivy2
-    networks:
-      - fraud-net
-    entrypoint:
-      - /opt/spark/bin/spark-submit
-    command:
-      - --conf
-      - spark.jars.ivy=/tmp/.ivy2
-      - /app/batch_silver.py
-
   # dbt (Silver → Gold). profile 지정으로 `up`엔 안 뜸.
   # 실행: docker compose -f docker/docker-compose.yml run --rm dbt run --profiles-dir .
   #       docker compose -f docker/docker-compose.yml run --rm dbt test --profiles-dir .
@@ -319,7 +262,6 @@ services:
       GCP_KEYFILE: /credentials/service_account.json
     volumes:
       - ${HOST_PROJECT_DIR:-..}/dbt:/dbt
-      - ${HOST_PROJECT_DIR:-..}/datalake:/datalake
       - ${HOST_PROJECT_DIR:-..}/credentials:/credentials:ro
     networks:
       - fraud-net
@@ -477,7 +419,6 @@ volumes:
   kafka1-data:
   kafka2-data:
   kafka3-data:
-  ivy-cache:
   airflow-pg-data:
   prometheus-data:
   grafana-data:

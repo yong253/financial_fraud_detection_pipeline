@@ -9,8 +9,8 @@ Medallion Silver 규칙:
   - row_id: SHA-256(nameOrig|step|type|amount|nameDest) — dedup 키
   - partitionOverwriteMode=dynamic → 멱등 재처리
 
-컨테이너 실행:
-  docker compose -f docker/docker-compose.yml run --rm spark-silver
+실행: Dataproc Serverless(Airflow DAG의 `spark_silver` 태스크)로 제출.
+  `--bronze-path`/`--silver-path`는 gs:// 경로 필수(Part2: 로컬 datalake 대체재 제거).
 """
 import argparse
 import os
@@ -20,14 +20,13 @@ from pyspark.sql import functions as F
 from pyspark.sql.types import DecimalType, LongType, StructField, StructType, StringType
 
 
-# 설정 소스 우선순위: CLI 인자(--bronze-path 등) > 환경변수 > 기본값.
-#   - 로컬 docker: 환경변수(.env)로 주입 → 인자 없이 그대로 동작(하위호환).
-#   - Dataproc Serverless: env 주입이 어려워 스크립트 인자로 전달 (`-- --bronze-path=gs://...`).
+# 설정 소스: CLI 인자(필수) — Dataproc Serverless 제출 시 DAG가 gs:// 경로를 전달.
+#   (Part2: 로컬 ./datalake 대체재 제거 — 로컬 경로 폴백/환경변수 기본값 없음. GCS 전용.)
 # parse_known_args → Spark 런타임이 붙이는 잉여 인자는 무시.
 def _parse_config():
     p = argparse.ArgumentParser(description="Bronze→Silver Spark 배치")
-    p.add_argument("--bronze-path",    default=os.getenv("BRONZE_PATH", "/datalake/bronze"))
-    p.add_argument("--silver-path",    default=os.getenv("SILVER_PATH", "/datalake/silver"))
+    p.add_argument("--bronze-path",    required=True)  # gs://.../topics/transactions
+    p.add_argument("--silver-path",    required=True)  # gs://...-silver
     p.add_argument("--step-epoch",     default=os.getenv("STEP_EPOCH", "2016-01-01 00:00:00"))
     p.add_argument("--target-tx-date", default=os.getenv("TARGET_TX_DATE"))
     args, _ = p.parse_known_args()

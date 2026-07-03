@@ -1,29 +1,21 @@
-"""⑤ Airflow DAG 정합성 테스트 (AF1~AF9).
+"""⑤ Airflow DAG 정합성 테스트 (AF1·AF2·AF7·AF9).
 
-구조 검증(AF1·AF2)·정합성 로직(AF7)은 빠르게, E2E/증분/멱등(AF3·AF4·AF6)은
-실제 잡 실행으로 검증한다. 무거운 것은 `@pytest.mark.slow`.
+구조 검증(AF1·AF2)·정합성 로직(AF7)·완결 판정(AF9)은 순수/컨테이너 조회로 빠르게 검증한다.
+E2E/증분/멱등 검증은 이제 GCS/BQ 기반 `airflow dags test` + 실제 Dataproc 배치 제출로
+대체됐다(Part2: 로컬 datalake·DuckDB 의존 테스트 AF3/AF4/AF6 제거).
 
-전제: `docker compose -f docker/docker-compose.yml up -d` 로 airflow 스택 + kafka 가 떠 있고,
-      datalake/bronze 에 데이터(예: 3000행, tx_date=2016-01-01)가 존재.
+전제: `docker compose -f docker/docker-compose.yml up -d` 로 airflow 스택 + kafka 가 떠 있음.
 
 실행:
-  pytest tests/test_airflow_dag.py -v                 # 전체
-  pytest tests/test_airflow_dag.py -v -m "not slow"   # 빠른 구조/로직만
+  pytest tests/test_airflow_dag.py -v
 """
 import subprocess
-from pathlib import Path
 
-import duckdb
 import pytest
 
-ROOT        = Path(__file__).parent.parent
-SCHEDULER   = "airflow-scheduler"
-COMPOSE     = ["docker", "compose", "-f", str(ROOT / "docker" / "docker-compose.yml")]
-DATALAKE    = ROOT / "datalake"
-WAREHOUSE   = DATALAKE / "warehouse.duckdb"
-SILVER_GLOB = str(DATALAKE / "silver" / "tx_date=*" / "**" / "*.parquet").replace("\\", "/")
-DAG_ID      = "fraud_pipeline"
-TASKS       = ["bronze_sensor", "spark_silver", "dbt_run", "dbt_test", "reconcile"]
+SCHEDULER = "airflow-scheduler"
+DAG_ID    = "fraud_pipeline"
+TASKS     = ["bronze_sensor", "spark_silver", "dbt_run", "dbt_test", "reconcile"]
 
 
 # ── 헬퍼 ─────────────────────────────────────────────────────────────────────
@@ -35,26 +27,6 @@ def _exec(*args, timeout=900):
         capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout,
     )
     return r.returncode, r.stdout + r.stderr
-
-
-def _compose_run(*args, timeout=900):
-    """호스트에서 `docker compose run --rm <job>` 실행."""
-    r = subprocess.run(
-        [*COMPOSE, "run", "--rm", *args],
-        capture_output=True, text=True, encoding="utf-8", errors="replace",
-        timeout=timeout, cwd=ROOT,
-    )
-    return r.returncode, r.stdout + r.stderr
-
-
-def _silver_count(where: str = "TRUE") -> int:
-    return duckdb.connect().execute(
-        f"SELECT count(*) FROM read_parquet('{SILVER_GLOB}', hive_partitioning=true) WHERE {where}"
-    ).fetchone()[0]
-
-
-def _silver_partitions() -> set[str]:
-    return {p.name.split("=")[1] for p in (DATALAKE / "silver").glob("tx_date=*")}
 
 
 # ── AF1: DAG 임포트 ──────────────────────────────────────────────────────────
@@ -126,46 +98,9 @@ def test_af9_bronze_completeness_gate():
     assert gate(0, 10, True) is False       # 그날 데이터 자체가 없음 → 미완결
 
 
-# ── AF3: Silver 날짜 필터 (Spark 1회) ───────────────────────────────────────
-
-@pytest.mark.slow
-def test_af3_silver_target_date_filter():
-    """TARGET_TX_DATE 지정 시 해당 파티션만 생성/갱신된다."""
-    code, out = _compose_run("-e", "TARGET_TX_DATE=2016-01-01", "spark-silver")
-    assert code == 0, f"[AF3] spark-silver 실패\n{out[-2000:]}"
-    parts = _silver_partitions()
-    assert "2016-01-01" in parts, f"[AF3] 대상 파티션 없음: {parts}"
-    # 데이터가 1일치(2016-01-01)뿐인 슬라이스 → 다른 날 파티션이 생기지 않아야 함
-    assert parts == {"2016-01-01"}, f"[AF3] 예상 외 파티션: {parts}"
-
-
-# ── AF4: E2E 단일 run ───────────────────────────────────────────────────────
-
-@pytest.mark.slow
-def test_af4_e2e_single_run():
-    """logical date 2016-01-01 1회 실행 → 전 태스크 성공 + reconcile 통과."""
-    code, out = _exec("airflow", "dags", "test", DAG_ID, "2016-01-01", timeout=900)
-    assert "reconcile] OK" in out or "핵심 스토리 정합성 통과" in out, f"[AF4] reconcile 미통과\n{out[-2000:]}"
-    assert "Marking run" in out or "state=success" in out.lower() or code == 0, out
-    # Gold == Silver is_suspicious 직접 재확인
-    gold = duckdb.connect(str(WAREHOUSE), read_only=True).execute(
-        "SELECT count(*) FROM undetected_fraud"
-    ).fetchone()[0]
-    assert gold == _silver_count("is_suspicious"), "[AF4] Gold != Silver is_suspicious"
-
-
-# ── AF6: 멱등성 ──────────────────────────────────────────────────────────────
-
-@pytest.mark.slow
-def test_af6_idempotent_rerun():
-    """같은 날짜 spark-silver 재실행 후 Silver 행수 불변."""
-    before = _silver_count()
-    code, out = _compose_run("-e", "TARGET_TX_DATE=2016-01-01", "spark-silver")
-    assert code == 0, out[-1500:]
-    assert _silver_count() == before, "[AF6] 재실행 후 Silver 행수 변동(멱등 위반)"
-
-
 # ── AF5/AF8 안내 ─────────────────────────────────────────────────────────────
 # AF5(백필): `airflow dags backfill -s 2016-01-01 -e 2016-01-03 fraud_pipeline` 로 다수
 #            logical date 실행 — 데이터 있는 날만 Silver, 빈 날 0행 성공(라이브 검증).
-# AF8(회귀): 기존 `pytest tests/test_integrity.py` 가 여전히 통과해야 함(별도 실행).
+# AF8(회귀): Bronze 무손실/Silver 필터/멱등성은 이제 GCP `airflow dags test` +
+#            실제 Dataproc 배치 제출로 검증한다(Part2: 로컬 test_integrity.py 제거,
+#            AF3/AF4/AF6도 동일 이유로 제거됨).

@@ -5,13 +5,14 @@
 
 전제(slow):
   docker compose -f docker/docker-compose.yml --profile monitoring up -d  # 모니터링 스택
-  + ⑤ 파이프라인이 1회 실행되어 datalake/warehouse.duckdb(Gold)·silver 가 존재.
+  + ⑤ 파이프라인이 1회 실행되어 BigQuery Gold(`fraud_gold.undetected_fraud`)가 존재.
 
 실행:
   pytest tests/test_monitoring.py -v                 # 전체
   pytest tests/test_monitoring.py -v -m "not slow"   # 빠른 설정/구조만
 """
 import json
+import os
 import subprocess
 import urllib.error
 import urllib.request
@@ -24,6 +25,10 @@ ROOT       = Path(__file__).parent.parent
 COMPOSE    = ["docker", "compose", "-f", str(ROOT / "docker" / "docker-compose.yml")]
 SCHEDULER  = "airflow-scheduler"
 DS_UID     = "fraud-prometheus"   # provisioning 데이터소스 uid (대시보드가 참조)
+
+# MON6: Gold(BigQuery) 대조용. DAG의 기본값과 동일(env 폴백).
+GCP_PROJECT_ID  = os.getenv("GCP_PROJECT_ID", "financial-pipeline-501007")
+BQ_DATASET_GOLD = os.getenv("BQ_DATASET_GOLD", "fraud_gold")
 
 PROM_YML   = ROOT / "prometheus" / "prometheus.yml"
 STATSD_YML = ROOT / "prometheus" / "statsd_mapping.yml"
@@ -162,10 +167,12 @@ def test_mon6_push_metrics_e2e():
     # 스크레이프 간격(15s) 때문에 푸시 직후엔 비어 있을 수 있어 최대 ~45s 폴링.
     import time
 
-    import duckdb
-    gold = duckdb.connect(str(ROOT / "datalake" / "warehouse.duckdb"), read_only=True).execute(
-        "SELECT count(*) FROM undetected_fraud"
-    ).fetchone()[0]
+    from google.cloud import bigquery
+
+    client = bigquery.Client(project=GCP_PROJECT_ID)
+    gold = list(client.query(
+        f"SELECT count(*) FROM `{GCP_PROJECT_ID}.{BQ_DATASET_GOLD}.undetected_fraud`"
+    ).result())[0][0]
     results = []
     for _ in range(15):
         code, body = _http("http://localhost:9090/api/v1/query?query=fraud_undetected_total")
@@ -195,5 +202,5 @@ def test_mon8_rule_performance_metrics():
 
 
 # ── MON7 안내 ────────────────────────────────────────────────────────────────
-# MON7(회귀): 기존 `pytest tests/test_airflow_dag.py tests/test_integrity.py` 가 여전히
-#            통과해야 함(별도 실행). push_metrics 추가 후 DAG 구조/정합성 불변 확인.
+# MON7(회귀): 기존 `pytest tests/test_airflow_dag.py` 가 여전히 통과해야 함(별도 실행).
+#            push_metrics 추가 후 DAG 구조/정합성 불변 확인(test_integrity.py는 Part2에서 제거됨).

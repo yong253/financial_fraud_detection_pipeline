@@ -9,9 +9,9 @@ Medallion **Silver** 레이어 규칙 (Bronze → Silver 변환):
 - `is_suspicious` 플래그 추가: **`isFraud=1 AND isFlaggedFraud=0`** (핵심 스토리 = 미탐지 사기)
 
 파일:
-- `batch_silver.py` — Bronze → Silver (Quarantine 포함). argparse 지원(`--bronze-path`, `--silver-path`,
-  `--target-tx-date`, env 폴백). 로컬 docker Spark / Dataproc Serverless 공용(경로만 인자로 분기).
-- `streaming_bronze.py` — Kafka → Bronze (과도기 passthrough, Part2에서 제거 예정).
+- `batch_silver.py` — Bronze → Silver (Quarantine 포함). Dataproc Serverless 전용(DAG의
+  `spark_silver` 태스크가 제출). `--bronze-path`/`--silver-path`는 gs:// 경로 필수(Part2:
+  로컬 datalake 대체재 제거), `--target-tx-date`는 선택.
 
 멱등: Spark checkpoint + 동적 파티션 덮어쓰기(partitionOverwrite dynamic) + dedup 키.
 금액은 float 드리프트 방지 위해 문자열/decimal 직렬화. (상위 정합성 규칙은 루트 `CLAUDE.md`·`TODO.md`.)
