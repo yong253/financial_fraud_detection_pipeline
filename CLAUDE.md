@@ -75,7 +75,9 @@ KAFKA_TOPIC=transactions
 
 ## 개발 규칙
 
-- 시크릿/키 파일은 절대 커밋하지 않는다 (`credentials/`, `.env`)
+- 시크릿/키 파일은 절대 커밋하지 않는다 (`credentials/`, `.env`). 새로 클론한 경우
+  `git config core.hooksPath .githooks` 1회 실행 — gitleaks 기반 pre-commit hook이
+  스테이징된 시크릿을 자동 차단한다(gitleaks 설치 필요: `winget install gitleaks.gitleaks`).
 - Bronze 레이어 데이터는 절대 수정하지 않는다
 - Quarantine으로 격리된 데이터는 삭제하지 않고 보존한다
 - DBT 모델에는 `not_null`, `unique` 테스트를 반드시 작성한다
