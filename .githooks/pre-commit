@@ -1,0 +1,26 @@
+#!/bin/sh
+# 시크릿 스캔 pre-commit hook — 스테이징된 변경분에서 API 키/서비스계정 JSON/토큰 등
+# 시크릿 패턴이 발견되면 커밋 자체를 차단한다.
+#
+# 설치(클론 후 1회): git config core.hooksPath .githooks
+# 우회(오탐 등 의도적 예외 시): git commit --no-verify
+#
+# gitleaks 설치: winget install gitleaks.gitleaks (Windows)
+#               https://github.com/gitleaks/gitleaks#installing (기타 OS)
+
+if ! command -v gitleaks >/dev/null 2>&1; then
+  echo "[pre-commit] gitleaks 미설치 — 시크릿 스캔을 건너뜁니다." >&2
+  echo "[pre-commit] 설치: winget install gitleaks.gitleaks (Windows)" >&2
+  exit 0
+fi
+
+gitleaks git --staged --redact -v
+status=$?
+
+if [ $status -ne 0 ]; then
+  echo "" >&2
+  echo "[pre-commit] 시크릿으로 의심되는 패턴이 발견되어 커밋을 차단했습니다." >&2
+  echo "[pre-commit] 오탐이라면 'git commit --no-verify'로 우회할 수 있습니다." >&2
+fi
+
+exit $status
