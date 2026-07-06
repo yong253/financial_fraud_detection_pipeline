@@ -267,6 +267,37 @@ services:
       - fraud-net
     command: ["run", "--profiles-dir", "."]
 
+  # CSV → Kafka Producer(컨테이너화, ★ 최종 전환 작업). profile 지정으로 `up`엔 안 뜸.
+  # 스모크: docker compose -f docker/docker-compose.yml --profile producer run --rm producer
+  # 오버라이드: ... run --rm producer python producer.py --realtime --done-marker gs://...
+  producer:
+    build:
+      context: ${HOST_PROJECT_DIR:-..}/kafka
+      dockerfile: Dockerfile
+    image: fraud-producer:local
+    profiles: ["producer"]
+    working_dir: /app/kafka
+    depends_on:
+      kafka1:
+        condition: service_healthy
+      kafka2:
+        condition: service_healthy
+      kafka3:
+        condition: service_healthy
+    environment:
+      # 컨테이너 내부 브로커 주소(호스트용 localhost:9092... 대신)
+      KAFKA_BOOTSTRAP_SERVERS: "kafka1:29092,kafka2:29092,kafka3:29092"
+      KAFKA_TOPIC: ${KAFKA_TOPIC:-transactions}
+      RAW_CSV_PATH: /app/data/raw/Synthetic_Financial_datasets_log.csv
+      GCP_CREDENTIALS_PATH: /credentials/service_account.json
+    volumes:
+      - ${HOST_PROJECT_DIR:-..}/kafka:/app/kafka
+      - ${HOST_PROJECT_DIR:-..}/data:/app/data
+      - ${HOST_PROJECT_DIR:-..}/credentials:/credentials:ro
+    networks:
+      - fraud-net
+    command: ["python", "producer.py", "--limit", "1000"]
+
   # ── Airflow 스택 (⑤ 오케스트레이션, LocalExecutor) ──────────────────────
   airflow-postgres:
     image: postgres:13

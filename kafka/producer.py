@@ -87,6 +87,7 @@ def main() -> int:
         sys.exit(130)
 
     signal.signal(signal.SIGINT, _graceful)
+    signal.signal(signal.SIGTERM, _graceful)  # docker stop(SIGTERM) 시에도 flush 후 종료
 
     # --resume: Kafka에 이미 있는 메시지 수만큼 CSV를 건너뜀
     skip_rows = 0
