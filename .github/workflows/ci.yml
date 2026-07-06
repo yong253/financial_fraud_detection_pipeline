@@ -1,0 +1,32 @@
+name: CI                      # Actions 탭에 표시될 워크플로 이름
+
+"on":                          # 언제 실행할지 (따옴표: YAML에서 on/off/yes/no는 예약된 불리언이라 문자열임을 명시)
+  push:
+    branches: [master]         # master에 push될 때
+  pull_request:
+    branches: [master]         # master로 향하는 PR이 열리거나 갱신될 때
+
+jobs:
+  lint-and-test:                # 잡 이름(임의로 지정 가능)
+    runs-on: ubuntu-latest       # GitHub이 띄워주는 임시 우분투 VM에서 실행
+
+    steps:
+      - name: 저장소 코드 가져오기
+        uses: actions/checkout@v4       # 남이 만든 재사용 액션 — 이 저장소를 VM에 clone
+
+      - name: Python 설치
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"        # 로컬 개발 환경과 동일 버전
+
+      - name: 필요한 패키지 설치
+        run: pip install ruff pytest pyyaml   # 이번 잡에 필요한 최소 패키지만
+
+      - name: Lint (코드 스타일 검사)
+        run: ruff check .
+
+      - name: 순수 로직 테스트 (외부 서비스/자격증명 불필요)
+        run: pytest tests/test_airflow_dag.py -k "af7 or af9" -v
+
+      - name: 모니터링 설정 테스트 (외부 서비스/자격증명 불필요)
+        run: pytest tests/test_monitoring.py -m "not slow" -v
