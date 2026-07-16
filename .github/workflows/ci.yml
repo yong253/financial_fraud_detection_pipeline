@@ -29,7 +29,7 @@ jobs:
         run: docker compose -f docker/docker-compose.yml up -d --build airflow-scheduler
 
       - name: Airflow 스케줄러 준비 대기
-        run: timeout 120 bash -c 'until docker exec airflow-scheduler airflow db check; do sleep 5; done'
+        run: timeout 240 bash -c 'until docker exec airflow-scheduler airflow db check; do sleep 5; done'
 
       - name: Airflow DAG 테스트 (AF1 임포트·AF2 구조·AF7 reconcile·AF9 완결판정)
         run: pytest tests/test_airflow_dag.py -v
