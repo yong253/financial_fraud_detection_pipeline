@@ -25,6 +25,9 @@ jobs:
       - name: Lint (코드 스타일 검사)
         run: ruff check .
 
+      - name: Airflow 로그/플러그인 디렉토리 준비 (CI엔 없어서 root 소유로 자동생성되는 문제 방지)
+        run: mkdir -p airflow/logs airflow/plugins && chmod -R 777 airflow/logs airflow/plugins
+
       - name: Airflow 스택 기동 (AF1/AF2용 — airflow-scheduler만, Kafka/GCP 키 불필요)
         run: docker compose -f docker/docker-compose.yml up -d --build airflow-scheduler
 
