@@ -3,7 +3,7 @@
 Medallion **Gold** 레이어 (dbt-bigquery, 데이터셋 `fraud_gold`):
 
 - `hourly_summary`: 시간대별 거래량/사기 건수 집계
-- `undetected_fraud`: 미탐지 사기 상세 (**핵심 테이블** — 핵심 스토리)
+- `undetected_fraud`: 기존 룰 미탐지 사기 상세 집계 (`isFraud=1 & isFlaggedFraud=0`)
 - `account_risk`: 계좌별 누적 위험도 점수
 
 구성:

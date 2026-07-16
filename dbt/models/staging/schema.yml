@@ -10,7 +10,7 @@ models:
           - not_null
           - unique
       - name: is_suspicious
-        description: "isFraud=1 AND isFlaggedFraud=0 (미탐지 사기 플래그)"
+        description: "isFraud=1 AND isFlaggedFraud=0 (원본 라벨 파생: 기존 룰 미탐지 사기 플래그)"
         data_tests:
           - not_null
       - name: type

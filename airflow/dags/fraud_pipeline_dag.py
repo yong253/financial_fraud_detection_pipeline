@@ -10,7 +10,9 @@
     절대 호스트경로(HOST_PROJECT_DIR)로 해석되어 docker-out-of-docker 경로 문제 없음.
 
 태스크: bronze_sensor → spark_silver({{ds}}) → dbt_run → dbt_test → reconcile
-정합성: reconcile 가 undetected_fraud == silver is_suspicious(누적) 검증, 불일치 시 DAG 실패.
+정합성: reconcile 가 레이어 간 무손실·무중복을 검증 — undetected_fraud(Gold) ==
+  silver is_suspicious(Silver, 누적) 등식으로 Silver→Gold 이동 중 행 유실/중복이 없는지 확인,
+  불일치 시 DAG 실패.
 """
 from __future__ import annotations
 
@@ -119,7 +121,8 @@ def _bq_query(sql: str):
 
 
 def _reconcile() -> None:
-    """누적 불변식: Gold undetected_fraud 행수 == Silver is_suspicious 행수. 불일치 시 실패."""
+    """레이어 간 무손실·무중복 정합성 검증(누적 불변식): Gold undetected_fraud 행수 ==
+    Silver is_suspicious 행수. 다르면 Silver→Gold 이동 중 행이 새거나 겹친 것이므로 실패시킨다."""
     gold = _bq_query(f"SELECT count(*) FROM {BQ_UNDETECTED}")[0][0]
     silver = _bq_query(
         f"SELECT count(*) FROM {BQ_SILVER} WHERE is_suspicious"
@@ -130,7 +133,7 @@ def _reconcile() -> None:
         raise ValueError(
             f"정합성 불일치: undetected_fraud({gold}) != silver is_suspicious({silver})"
         )
-    print("[reconcile] OK — 핵심 스토리 정합성 통과")
+    print("[reconcile] OK — 레이어 간 정합성(무손실·무중복) 통과")
 
 
 def _push_metrics(ds: str) -> None:
@@ -256,12 +259,15 @@ with DAG(
     )
 
     # {{ ds }} = 처리할 tx_date. Dataproc Serverless 배치로 Bronze(gs://) → Silver(gs://).
-    # batch_id 는 시도별 유니크(재시도 시 ALREADY_EXISTS 회피). 서브넷 미지정=기본(PGA on).
+    # batch_id는 제출마다 uuid8 suffix로 유니크(과거 배치 재부착/no-op 방지). 연산자는 동일 ID가
+    # 이미 있으면 새로 돌리지 않고 기존(완료된) 배치에 attach 후 SUCCESS 처리해버려서, DAG 이력
+    # 삭제 후 재실행(try_number가 1로 리셋)하면 예전 배치와 조용히 충돌하는 문제가 실측됨.
+    # 서브넷 미지정=기본(PGA on).
     spark_silver = DataprocCreateBatchOperator(
         task_id="spark_silver",
         project_id=GCP_PROJECT_ID,
         region=GCP_REGION,
-        batch_id="silver-{{ ds_nodash }}-{{ ti.try_number }}",
+        batch_id="silver-{{ ds_nodash }}-{{ macros.uuid.uuid4().hex[:8] }}",
         batch={
             "pyspark_batch": {
                 "main_python_file_uri": SPARK_CODE_URI,

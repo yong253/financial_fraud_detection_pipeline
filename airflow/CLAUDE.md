@@ -11,8 +11,9 @@ Bronze → Spark Batch(Dataproc) → Silver → DBT → Gold → Grafana
 - **처리 모델 = 이벤트시간(tx_date) 일별 증분:** DAG run 1개 = 하루치(`{{ ds }}`), catchup 백필.
 - 태스크: `bronze_sensor → spark_silver({{ds}}) → dbt_run → dbt_test → reconcile → push_metrics`
   - `spark_silver`: DataprocCreateBatchOperator(Serverless). `upload_spark_code`가 코드→GCS 동기화.
-  - `reconcile`: **undetected_fraud == silver is_suspicious** 등식 검증, 불일치 시 DAG 실패
-    (검증 절차·명령은 `verify-reconciliation` 스킬 참조).
+  - `reconcile`: **레이어 간 무손실·무중복 정합성 검증** — `undetected_fraud`(Gold) ==
+    `silver is_suspicious`(Silver) 등식으로 Silver→Gold 이동 중 행 유실/중복이 없었는지 확인,
+    불일치 시 DAG 실패(검증 절차·명령은 `verify-reconciliation` 스킬 참조).
   - `push_metrics`: 배치 records + 사기 KPI를 Pushgateway로 push(모니터링은 `prometheus/CLAUDE.md`).
 
 파일: `dags/fraud_pipeline_dag.py`.

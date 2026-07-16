@@ -5,7 +5,7 @@ Medallion Silver 규칙:
     (Connect SMT가 넣는 epoch millis) — 타입 변환 + 품질 검증
   - Quarantine 패턴: 불량 데이터 → silver/quarantine/ (삭제 금지)
   - 건수 정합성: Bronze == valid_raw + quarantine (불일치 시 중단)
-  - is_suspicious 플래그: isFraud=1 AND isFlaggedFraud=0 (핵심 스토리)
+  - is_suspicious 플래그: isFraud=1 AND isFlaggedFraud=0 (원본 라벨 파생: 기존 룰 미탐지 사기 집계)
   - row_id: SHA-256(nameOrig|step|type|amount|nameDest) — dedup 키
   - partitionOverwriteMode=dynamic → 멱등 재처리
 

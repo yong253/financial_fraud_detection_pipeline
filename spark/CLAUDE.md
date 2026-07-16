@@ -6,7 +6,8 @@ Medallion **Silver** 레이어 규칙 (Bronze → Silver 변환):
 - 데이터 품질 검증 (null, amount < 0, 잘못된 type 등)
 - **Quarantine 패턴**: 불량 데이터는 `silver/quarantine/` 로 격리, 메인 Silver에서 제외
   (격리 데이터는 삭제하지 않고 보존 — 루트 개발 규칙)
-- `is_suspicious` 플래그 추가: **`isFraud=1 AND isFlaggedFraud=0`** (핵심 스토리 = 미탐지 사기)
+- `is_suspicious` 플래그 추가: **`isFraud=1 AND isFlaggedFraud=0`** (원본 라벨 파생: 기존 룰이
+  놓친 사기 — 새 탐지기가 아니라 기존 룰 성능 집계용)
 
 파일:
 - `batch_silver.py` — Bronze → Silver (Quarantine 포함). Dataproc Serverless 전용(DAG의

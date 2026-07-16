@@ -175,7 +175,7 @@
     },
     {
       "type": "stat",
-      "title": "Precision (탐지 정밀도)",
+      "title": "기존 룰 Precision (탐지 정밀도)",
       "datasource": { "type": "prometheus", "uid": "fraud-prometheus" },
       "gridPos": { "h": 5, "w": 4, "x": 16, "y": 32 },
       "fieldConfig": { "defaults": { "unit": "percentunit", "min": 0, "max": 1 }, "overrides": [] },
@@ -184,7 +184,7 @@
     },
     {
       "type": "stat",
-      "title": "Recall (탐지 재현율)",
+      "title": "기존 룰 Recall (탐지 재현율)",
       "datasource": { "type": "prometheus", "uid": "fraud-prometheus" },
       "gridPos": { "h": 5, "w": 4, "x": 20, "y": 32 },
       "fieldConfig": { "defaults": { "unit": "percentunit", "min": 0, "max": 1, "thresholds": { "mode": "absolute", "steps": [ { "color": "red", "value": null }, { "color": "orange", "value": 0.3 }, { "color": "green", "value": 0.7 } ] } }, "overrides": [] },

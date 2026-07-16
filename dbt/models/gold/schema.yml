@@ -2,7 +2,7 @@ version: 2
 
 models:
   - name: undetected_fraud
-    description: "🎯 핵심 테이블 — 룰 기반 시스템이 미탐지한 사기 (isFraud=1 & isFlaggedFraud=0)"
+    description: "기존 룰 미탐지 사기 집계 (isFraud=1 & isFlaggedFraud=0)"
     columns:
       - name: row_id
         description: "SHA-256 dedup 키 (무중복 보장)"

@@ -1,6 +1,6 @@
 {{ config(materialized='table') }}
 
--- 🎯 핵심 스토리: 룰 기반 시스템이 놓친 사기 (isFraud=1 AND isFlaggedFraud=0).
+-- 기존 룰(isFlaggedFraud)이 놓친 사기 집계. 원본 라벨 파생(isFraud=1 AND isFlaggedFraud=0).
 -- 잔액 변화(orig_balance_drop / dest_balance_gain)를 함께 노출해 사기 패턴 분석을 돕는다.
 SELECT
     row_id,
