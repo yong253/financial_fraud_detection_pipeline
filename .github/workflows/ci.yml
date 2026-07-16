@@ -25,8 +25,22 @@ jobs:
       - name: Lint (코드 스타일 검사)
         run: ruff check .
 
-      - name: 순수 로직 테스트 (외부 서비스/자격증명 불필요)
-        run: pytest tests/test_airflow_dag.py -k "af7 or af9" -v
+      - name: Airflow 스택 기동 (AF1/AF2용 — airflow-scheduler만, Kafka/GCP 키 불필요)
+        run: docker compose -f docker/docker-compose.yml up -d --build airflow-scheduler
+
+      - name: Airflow 스케줄러 준비 대기
+        run: timeout 120 bash -c 'until docker exec airflow-scheduler airflow db check; do sleep 5; done'
+
+      - name: Airflow DAG 테스트 (AF1 임포트·AF2 구조·AF7 reconcile·AF9 완결판정)
+        run: pytest tests/test_airflow_dag.py -v
+
+      - name: 실패 시 Airflow 로그 덤프
+        if: failure()
+        run: docker compose -f docker/docker-compose.yml logs airflow-init airflow-postgres airflow-scheduler
+
+      - name: Airflow 스택 정리
+        if: always()
+        run: docker compose -f docker/docker-compose.yml down -v
 
       - name: 모니터링 설정 테스트 (외부 서비스/자격증명 불필요)
         run: pytest tests/test_monitoring.py -m "not slow" -v
