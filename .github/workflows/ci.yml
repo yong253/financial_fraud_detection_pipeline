@@ -25,6 +25,9 @@ jobs:
       - name: Lint (코드 스타일 검사)
         run: ruff check .
 
+      - name: dbt 모델 컴파일 체크 (SQL/Jinja 문법 + ref 검증, GCP 인증 불필요)
+        run: docker compose -f docker/docker-compose.yml run --rm dbt parse --profiles-dir .
+
       - name: Airflow 로그/플러그인 디렉토리 준비 (CI엔 없어서 root 소유로 자동생성되는 문제 방지)
         run: mkdir -p airflow/logs airflow/plugins && chmod -R 777 airflow/logs airflow/plugins
 
