@@ -1,0 +1,34 @@
+name: CD                      # dbt(Gold) 모델을 실제 BigQuery에 배포
+
+"on":
+  workflow_run:
+    workflows: ["CI"]         # CI 통과한 커밋만 배포(테스트 실패한 코드가 실배포되는 사고 방지)
+    types: [completed]
+    branches: [master]
+  workflow_dispatch:          # 수동 재배포용(Actions 탭에서 버튼으로 실행 가능)
+
+jobs:
+  deploy-dbt:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+
+    steps:
+      - name: 저장소 코드 가져오기
+        uses: actions/checkout@v4
+        with:
+          ref: master
+
+      - name: GCP 서비스계정 키 복원 (CD 전용 최소권한 키, GitHub Secrets에서)
+        run: |
+          mkdir -p credentials
+          echo "${{ secrets.GCP_SA_KEY_B64 }}" | base64 -d > credentials/service_account.json
+
+      - name: dbt run (Gold 테이블 실제 배포)
+        run: docker compose -f docker/docker-compose.yml run --rm dbt run --profiles-dir .
+
+      - name: dbt test (배포 직후 데이터 품질 검증)
+        run: docker compose -f docker/docker-compose.yml run --rm dbt test --profiles-dir .
+
+      - name: 자격증명 정리
+        if: always()
+        run: rm -f credentials/service_account.json
