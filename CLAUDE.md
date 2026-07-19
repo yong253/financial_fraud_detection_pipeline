@@ -65,17 +65,7 @@ isFlaggedFraud=0`)를 파이프라인이 집계·가시화한다. (우리가 새
 
 ## 환경변수 (.env)
 
-```
-GCP_PROJECT_ID=
-GCS_BUCKET_BRONZE=
-GCS_BUCKET_SILVER=
-GCS_BUCKET_GOLD=
-BQ_DATASET_SILVER=fraud_silver
-BQ_DATASET_GOLD=fraud_gold
-GCP_CREDENTIALS_PATH=./credentials/service_account.json
-KAFKA_BOOTSTRAP_SERVERS=localhost:9092
-KAFKA_TOPIC=transactions
-```
+환경변수는 `.env.example` 참고 (복사해서 `.env`로 사용).
 
 ---
 
