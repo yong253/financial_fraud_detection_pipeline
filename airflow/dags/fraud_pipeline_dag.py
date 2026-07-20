@@ -139,44 +139,64 @@ def _reconcile() -> None:
 def _push_metrics(ds: str) -> None:
     """⑥ 모니터링: 배치 records + 사기 KPI를 Pushgateway로 push(Prometheus가 스크랩).
 
-    - 일별 그룹(grouping_key=tx_date): 그날 처리/사기 건수를 일자별 series로 보존(백필 누적).
-    - 전역 그룹: 누적 headline(미탐지 사기 총건수/마지막 성공 시각) + Top-N 계좌 + 시간대 분포.
-    Prometheus는 상세 행에 약하므로 비즈니스 상세는 카운트/Top-N 게이지로 표현(설계 합의).
+    전부 전역 그룹(grouping_key 없음) + 풀테이블 집계 → 단일 실행으로 전체 일자/시각을 커버.
+    Prometheus는 값을 스크레이프 시각으로 타임스탬프하므로(2016 데이터를 진짜 시간축에 못 그림),
+    일자/시각 흐름은 tx_date·tx_hour(epoch millis)를 라벨로 박고 Grafana 순서축(라인/막대)으로 표현.
     """
     import time
 
     from prometheus_client import CollectorRegistry, Gauge, pushadd_to_gateway
 
-    # ── 1) 그날 1일치 Silver 집계(이벤트시간 tx_date 파티션) ──
-    day = _bq_query(
-        f"SELECT count(*), "
-        f"       COALESCE(SUM(CASE WHEN isFraud=1 THEN 1 ELSE 0 END),0), "
+    # ── 1) 일자별(라벨 d_ms = 날짜 자정 epoch millis) 층별 정합성 ──
+    # Silver: 처리 행수 + is_suspicious.
+    by_date = _bq_query(
+        f"SELECT UNIX_MILLIS(TIMESTAMP(tx_date)) AS d_ms, count(*), "
         f"       COALESCE(SUM(CASE WHEN is_suspicious THEN 1 ELSE 0 END),0) "
-        f"FROM {BQ_SILVER} "
-        f"WHERE tx_date = DATE '{ds}'"
-    )[0]
-    day_rows, day_fraud, day_undetected = (day[0] or 0), (day[1] or 0), (day[2] or 0)
+        f"FROM {BQ_SILVER} GROUP BY d_ms ORDER BY d_ms"
+    )
+    # Gold 미탐지(정합성 등식의 Gold 쪽) — 날짜별.
+    gold_by_ms = dict(_bq_query(
+        f"SELECT UNIX_MILLIS(TIMESTAMP(tx_date)), count(*) FROM {BQ_UNDETECTED} GROUP BY 1"
+    ))
+    # Bronze "정상·유니크"(품질통과 + row_id DISTINCT) — batch_silver `_reject_reason`/row_id 를 SQL로
+    # 미러링(원천: spark/batch_silver.py). 이걸 Silver와 대조하면 Bronze→Silver 무손실·무중복 독립 교차검증.
+    # tx_date = 2016-01-01 00:00 + (step-1)h. valid = 아래 reject 조건 전부 미해당.
+    bronze_by_ms = dict(_bq_query(
+        f"""
+        SELECT UNIX_MILLIS(TIMESTAMP(DATE(TIMESTAMP_ADD(TIMESTAMP '{STEP_EPOCH}',
+                 INTERVAL (CAST(step AS INT64) - 1) HOUR)))) AS d_ms,
+               COUNT(DISTINCT TO_HEX(SHA256(CONCAT(nameOrig,'|',step,'|',type,'|',amount,'|',nameDest)))) AS n
+        FROM {BQ_BRONZE}
+        WHERE step IS NOT NULL AND amount IS NOT NULL AND nameOrig IS NOT NULL
+          AND type IS NOT NULL AND nameDest IS NOT NULL
+          AND SAFE_CAST(amount AS FLOAT64) IS NOT NULL AND SAFE_CAST(amount AS FLOAT64) > 0
+          AND SAFE_CAST(step AS INT64) BETWEEN 1 AND 743
+          AND type IN ('PAYMENT','TRANSFER','CASH_OUT','CASH_IN','DEBIT')
+          AND isFraud IN ('0','1') AND isFlaggedFraud IN ('0','1')
+          AND NOT COALESCE(SAFE_CAST(oldbalanceOrg AS FLOAT64) < 0, FALSE)
+          AND NOT COALESCE(SAFE_CAST(newbalanceOrig AS FLOAT64) < 0, FALSE)
+        GROUP BY d_ms
+        """
+    ))
 
-    day_reg = CollectorRegistry()
-    Gauge("fraud_silver_rows", "tx_date 1일치 Silver 기록 행수", registry=day_reg).set(day_rows)
-    Gauge("fraud_day_fraud", "tx_date 1일치 사기(isFraud=1) 건수", registry=day_reg).set(day_fraud)
-    Gauge("fraud_day_undetected", "tx_date 1일치 미탐지 사기 건수", registry=day_reg).set(day_undetected)
-    pushadd_to_gateway(
-        PUSHGATEWAY, job="fraud_pipeline", registry=day_reg, grouping_key={"tx_date": ds}
+    # ── 2) 시간순(tx_hour) 집계 — 라벨은 epoch millis(순서/시각 라벨용) ──
+    by_hour = _bq_query(
+        f"SELECT CAST(UNIX_MILLIS(TIMESTAMP(tx_hour)) AS STRING) AS ms, "
+        f"       SUM(tx_count), SUM(fraud_count) "
+        f"FROM {BQ_HOURLY} GROUP BY ms ORDER BY ms"
     )
 
-    # ── 2) 전역 누적 KPI(Gold) ──
-    undetected_total = _bq_query(f"SELECT count(*) FROM {BQ_UNDETECTED}")[0][0]
+    # ── 3) 거래 유형별(type) 건수 + 위험 계좌 Top-N(사기 건수 랭킹) ──
+    by_type = _bq_query(
+        f"SELECT type, SUM(tx_count), SUM(fraud_count) FROM {BQ_HOURLY} GROUP BY type ORDER BY type"
+    )
     top_accounts = _bq_query(
-        f"SELECT account_id, fraud_amount FROM {BQ_ACCOUNT} "
-        f"ORDER BY fraud_amount DESC LIMIT {TOP_N_ACCOUNTS}"
-    )
-    hourly = _bq_query(
-        f"SELECT EXTRACT(hour FROM tx_hour) AS h, SUM(tx_count), SUM(fraud_count) "
-        f"FROM {BQ_HOURLY} GROUP BY 1 ORDER BY 1"
+        f"SELECT account_id, fraud_tx_count FROM {BQ_ACCOUNT} "
+        f"ORDER BY fraud_tx_count DESC LIMIT {TOP_N_ACCOUNTS}"
     )
 
-    # ── 기존 룰 시스템(isFlaggedFraud) 혼동행렬 — 탐지 성능 검증 KPI ──
+    # ── 4) 전역 누적 KPI + 기존 룰 혼동행렬 ──
+    undetected_total = _bq_query(f"SELECT count(*) FROM {BQ_UNDETECTED}")[0][0]
     #   actual=실제사기, flagged=기존룰 탐지, tp=맞춘것, fp=오탐, fn=놓침(=is_suspicious=미탐지)
     #   Silver 1회 스캔으로 누적 집계(전역). PaySim은 flagged가 극히 드묾 → recall≈0(스토리).
     cm = _bq_query(
@@ -191,6 +211,8 @@ def _push_metrics(ds: str) -> None:
     actual, flagged, tp, fp, fn = (cm[0], cm[1], cm[2], cm[3], cm[4])
     precision = (tp / flagged) if flagged else 0.0   # 탐지한 것 중 진짜 사기 비율
     recall    = (tp / actual) if actual else 0.0      # 실제 사기 중 잡은 비율
+    # 레이어 정합성: Gold 미탐지 건수 == Silver is_suspicious 건수여야 무손실·무중복(reconcile 등식).
+    reconcile_match = 1.0 if undetected_total == fn else 0.0
 
     g_reg = CollectorRegistry()
     Gauge("fraud_undetected_total", "미탐지 사기 누적 총건수(FN)", registry=g_reg).set(undetected_total)
@@ -205,25 +227,57 @@ def _push_metrics(ds: str) -> None:
         "fraud_batch_last_success_timestamp_seconds",
         "마지막 배치 성공 unixtime", registry=g_reg,
     ).set(time.time())
+    Gauge(
+        "fraud_reconcile_match",
+        "레이어 정합성(Gold 미탐지==Silver is_suspicious): 1=정합/0=불일치", registry=g_reg,
+    ).set(reconcile_match)
 
-    risk = Gauge("fraud_account_risk_score", "계좌별 누적 사기 금액(Top-N)", ["account"], registry=g_reg)
-    for account_id, fraud_amount in top_accounts:
-        risk.labels(account=str(account_id)).set(float(fraud_amount or 0))
+    # 일자별(d_ms) — 처리 행수(추세) + 층별 정합성 차이(무결성 시 0).
+    d_rows = Gauge("fraud_by_date_rows", "일자별 Silver 처리 행수", ["d_ms"], registry=g_reg)
+    d_bs   = Gauge("fraud_by_date_bs_diff",
+                   "Bronze(정상·유니크) − Silver (Bronze→Silver 무손실·무중복, 0이면 정합)",
+                   ["d_ms"], registry=g_reg)
+    d_sg   = Gauge("fraud_by_date_sg_diff",
+                   "Silver is_suspicious − Gold 미탐지 (Silver→Gold 정합, 0이면 정합)",
+                   ["d_ms"], registry=g_reg)
+    bs_max = sg_max = 0
+    for d_ms, rows, susp in by_date:
+        key = str(d_ms)
+        bs = int(bronze_by_ms.get(d_ms, 0)) - int(rows or 0)
+        sg = int(susp or 0) - int(gold_by_ms.get(d_ms, 0))
+        d_rows.labels(d_ms=key).set(float(rows or 0))
+        d_bs.labels(d_ms=key).set(float(bs))
+        d_sg.labels(d_ms=key).set(float(sg))
+        bs_max = max(bs_max, abs(bs)); sg_max = max(sg_max, abs(sg))
 
-    tx_by_hour   = Gauge("fraud_hourly_tx", "시간대별 거래 건수", ["hour"], registry=g_reg)
-    fraud_by_hour = Gauge("fraud_hourly_fraud", "시간대별 사기 건수", ["hour"], registry=g_reg)
-    for hour, tx_count, fraud_count in hourly:
-        h = str(int(hour))
-        tx_by_hour.labels(hour=h).set(float(tx_count or 0))
-        fraud_by_hour.labels(hour=h).set(float(fraud_count or 0))
+    # 시간순(tx_hour, epoch millis 라벨) — 거래/사기 별도 추세.
+    h_tx    = Gauge("fraud_by_hour_tx", "시간(tx_hour)별 거래 건수", ["ts_ms"], registry=g_reg)
+    h_fraud = Gauge("fraud_by_hour_fraud", "시간(tx_hour)별 사기 건수", ["ts_ms"], registry=g_reg)
+    for ms, tx_count, fraud_count in by_hour:
+        h_tx.labels(ts_ms=str(ms)).set(float(tx_count or 0))
+        h_fraud.labels(ts_ms=str(ms)).set(float(fraud_count or 0))
+
+    # 거래 유형별 건수.
+    type_tx    = Gauge("fraud_type_tx", "거래 유형별 거래 건수", ["type"], registry=g_reg)
+    type_fraud = Gauge("fraud_type_fraud", "거래 유형별 사기 건수", ["type"], registry=g_reg)
+    for tx_type, t_tx, t_fraud in by_type:
+        type_tx.labels(type=str(tx_type)).set(float(t_tx or 0))
+        type_fraud.labels(type=str(tx_type)).set(float(t_fraud or 0))
+
+    # 위험 계좌 Top-N(사기 건수 기준).
+    acct = Gauge("fraud_account_fraud_count", "계좌별 사기 거래 건수(Top-N)", ["account"], registry=g_reg)
+    for account_id, fraud_tx_count in top_accounts:
+        acct.labels(account=str(account_id)).set(float(fraud_tx_count or 0))
 
     pushadd_to_gateway(PUSHGATEWAY, job="fraud_pipeline", registry=g_reg)
 
     print(
-        f"[push_metrics] tx_date={ds} rows={day_rows} day_undetected={day_undetected} | "
+        f"[push_metrics] ds={ds} | "
         f"actual={actual} flagged={flagged} tp={tp} fp={fp} fn={fn} "
-        f"precision={precision:.3f} recall={recall:.3f} | "
-        f"undetected_total={undetected_total} top_accounts={len(top_accounts)} hours={len(hourly)} → Pushgateway"
+        f"precision={precision:.3f} recall={recall:.3f} reconcile_match={reconcile_match:.0f} | "
+        f"bs_diff_max={bs_max} sg_diff_max={sg_max} (0=정합) | "
+        f"undetected_total={undetected_total} dates={len(by_date)} hours={len(by_hour)} "
+        f"types={len(by_type)} top_accounts={len(top_accounts)} → Pushgateway"
     )
 
 
@@ -233,7 +287,7 @@ with DAG(
     default_args=default_args,
     schedule="@daily",
     start_date=datetime(2016, 1, 1),
-    end_date=datetime(2016, 1, 4),   # 3일치 흐름 점검용(ds 01-01/02/03) — 전량 검증 시 2016-02-01로 복원
+    end_date=datetime(2016, 1, 6),   # 5일치 백필용(ds 01-01~01-05) — 전량 검증 시 2016-02-01로 복원
     catchup=True,
     max_active_runs=1,               # 같은 파티션 동시 처리 방지
     tags=["fraud", "medallion", "batch"],

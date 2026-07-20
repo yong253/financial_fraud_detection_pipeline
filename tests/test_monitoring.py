@@ -197,8 +197,33 @@ def test_mon8_rule_performance_metrics():
     code, body = _http("http://localhost:9091/metrics")
     assert code == 200, "[MON8] Pushgateway 응답 없음"
     for metric in ("fraud_actual_total", "fraud_flagged_total", "fraud_true_positive_total",
-                   "fraud_rule_precision", "fraud_rule_recall"):
+                   "fraud_false_positive_total", "fraud_rule_precision", "fraud_rule_recall",
+                   # 레이어 정합성(총합) + 일자별 층별 무결성 차이(=0) + 시간순 흐름 + 유형별.
+                   "fraud_reconcile_match", "fraud_suspicious_total",
+                   "fraud_by_date_rows", "fraud_by_date_bs_diff", "fraud_by_date_sg_diff",
+                   "fraud_by_hour_tx", "fraud_by_hour_fraud", "fraud_type_fraud"):
         assert metric in body, f"[MON8] 메트릭 누락: {metric}"
+
+
+# ── MON9: 대시보드 패널이 참조하는 fraud_* 메트릭이 실제로 push되는지 정적 교차검증 ──
+
+def test_mon9_dashboard_metrics_are_emitted():
+    """대시보드 패널 expr의 모든 fraud_* 메트릭이 push_metrics(DAG)가 만드는 Gauge 이름 집합에
+    포함돼야 한다(오타·드리프트로 빈 패널이 되는 것을 배포 전에 차단). 자격증명·컨테이너 불필요."""
+    import re
+
+    dag_py = ROOT / "airflow" / "dags" / "fraud_pipeline_dag.py"
+    emitted = set(re.findall(r'Gauge\(\s*"(fraud_[a-z_]+)"', dag_py.read_text(encoding="utf-8")))
+    assert emitted, "[MON9] DAG에서 fraud_ 메트릭을 못 찾음(정규식/파일 확인)"
+
+    dash = json.loads(DASH_JSON.read_text(encoding="utf-8"))
+    referenced = set()
+    for p in _iter_panels(dash):
+        for t in p.get("targets", []):
+            referenced |= set(re.findall(r"\bfraud_[a-z_]+\b", t.get("expr", "")))
+
+    missing = referenced - emitted
+    assert not missing, f"[MON9] 대시보드가 참조하나 push_metrics가 안 만드는 메트릭: {sorted(missing)}"
 
 
 # ── MON7 안내 ────────────────────────────────────────────────────────────────
