@@ -14,7 +14,6 @@ Run:
 
 Outputs (next to this script):
     architecture.png  — end-to-end pipeline architecture
-    dag_flow.png      — Airflow DAG task dependency chain (plain task chips)
 
 Windows note: if node icons render as blank boxes, Graphviz's `dot.exe` is
 failing to open the icon PNGs because the Python install path contains
@@ -87,14 +86,6 @@ SILVER_CARD = dict(shape="box", style="filled,rounded", fillcolor="#B7BEC6", col
 GOLD_CARD = dict(shape="box", style="filled,rounded", fillcolor="#EFC94C", color="#A9862A",
                   fontname=FONT, fontsize="13", fontcolor="#4A3B0A", fixedsize="false",
                   width="1.3", height="0.6", margin="0.15,0.08")
-
-# Plain flowchart chip (used for DAG task nodes — no repeated provider icon).
-BOX = dict(
-    shape="box", style="filled,rounded", fillcolor="#EAF2FB", color="#5B8DBF",
-    fontname=FONT, fontsize="13", fontcolor="#1B3A57", fixedsize="false",
-    width="1.8", height="0.65", margin="0.18,0.1",
-)
-
 
 def _pos(x: float, y: float) -> str:
     """Pinned neato position (points, origin bottom-left, y up)."""
@@ -187,33 +178,7 @@ def build_architecture() -> None:
         graf >> analyst
 
 
-def build_dag_flow() -> None:
-    with Diagram(
-        "Airflow DAG Task Flow — fraud_pipeline_dag",
-        filename=os.path.join(OUT_DIR, "dag_flow"),
-        show=False,
-        direction="LR",
-        graph_attr={**GRAPH_ATTR, "ranksep": "0.7"},
-        node_attr=NODE_ATTR,
-        edge_attr=EDGE_ATTR,
-        outformat="png",
-    ):
-        with Cluster("fraud_pipeline_dag  ·  event-time, daily incremental", graph_attr=LANE):
-            bronze_sensor = Node("bronze_sensor", **BOX)
-            upload_spark_code = Node("upload_spark_code", **BOX)
-            spark_silver = Node("spark_silver", **BOX)
-            dbt_run = Node("dbt_run", **BOX)
-            dbt_test = Node("dbt_test", **BOX)
-            reconcile = Node("reconcile\n(lossless check)", **BOX)
-            push_metrics = Node("push_metrics", **BOX)
-
-            [bronze_sensor, upload_spark_code] >> spark_silver
-            spark_silver >> dbt_run >> dbt_test >> reconcile >> push_metrics
-
-
 if __name__ == "__main__":
     build_architecture()
-    build_dag_flow()
     print("Generated:")
     print(f"  {os.path.join(OUT_DIR, 'architecture.png')}")
-    print(f"  {os.path.join(OUT_DIR, 'dag_flow.png')}")

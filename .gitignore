@@ -4,6 +4,10 @@ credentials/
 !dbt/profiles.yml
 TODO.md
 
+# 비공개(사용자 허락 전까지 미공개)
+README.md
+docs/diagrams/dag_flow.png
+
 # 데이터 (대용량)
 data/raw/
 data/*.csv
