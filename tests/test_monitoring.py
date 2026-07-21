@@ -200,8 +200,10 @@ def test_mon8_rule_performance_metrics():
                    "fraud_false_positive_total", "fraud_rule_precision", "fraud_rule_recall",
                    # 레이어 정합성(총합) + 일자별 층별 무결성 차이(=0) + 시간순 흐름 + 유형별.
                    "fraud_reconcile_match", "fraud_suspicious_total",
-                   "fraud_by_date_rows", "fraud_by_date_bs_diff", "fraud_by_date_sg_diff",
-                   "fraud_by_hour_tx", "fraud_by_hour_fraud", "fraud_type_fraud"):
+                   "fraud_by_date_rows", "fraud_by_date_fraud",
+                   "fraud_by_date_bs_diff", "fraud_by_date_sg_diff",
+                   "fraud_by_hour_tx", "fraud_by_hour_fraud",
+                   "fraud_type_fraud", "fraud_mule_recv_count"):
         assert metric in body, f"[MON8] 메트릭 누락: {metric}"
 
 
@@ -216,11 +218,14 @@ def test_mon9_dashboard_metrics_are_emitted():
     emitted = set(re.findall(r'Gauge\(\s*"(fraud_[a-z_]+)"', dag_py.read_text(encoding="utf-8")))
     assert emitted, "[MON9] DAG에서 fraud_ 메트릭을 못 찾음(정규식/파일 확인)"
 
+    # dag_id 라벨 값(fraud_pipeline)은 메트릭이 아니라 라벨 → 오탐 제외.
+    NON_METRIC = {"fraud_pipeline"}
     dash = json.loads(DASH_JSON.read_text(encoding="utf-8"))
     referenced = set()
     for p in _iter_panels(dash):
         for t in p.get("targets", []):
             referenced |= set(re.findall(r"\bfraud_[a-z_]+\b", t.get("expr", "")))
+    referenced -= NON_METRIC
 
     missing = referenced - emitted
     assert not missing, f"[MON9] 대시보드가 참조하나 push_metrics가 안 만드는 메트릭: {sorted(missing)}"

@@ -148,9 +148,10 @@ def _push_metrics(ds: str) -> None:
     from prometheus_client import CollectorRegistry, Gauge, pushadd_to_gateway
 
     # ── 1) 일자별(라벨 d_ms = 날짜 자정 epoch millis) 층별 정합성 ──
-    # Silver: 처리 행수 + is_suspicious.
+    # Silver: 처리 행수 + 사기(isFraud=1) + is_suspicious.
     by_date = _bq_query(
         f"SELECT UNIX_MILLIS(TIMESTAMP(tx_date)) AS d_ms, count(*), "
+        f"       COALESCE(SUM(CASE WHEN isFraud=1 THEN 1 ELSE 0 END),0), "
         f"       COALESCE(SUM(CASE WHEN is_suspicious THEN 1 ELSE 0 END),0) "
         f"FROM {BQ_SILVER} GROUP BY d_ms ORDER BY d_ms"
     )
@@ -190,9 +191,11 @@ def _push_metrics(ds: str) -> None:
     by_type = _bq_query(
         f"SELECT type, SUM(tx_count), SUM(fraud_count) FROM {BQ_HOURLY} GROUP BY type ORDER BY type"
     )
-    top_accounts = _bq_query(
-        f"SELECT account_id, fraud_tx_count FROM {BQ_ACCOUNT} "
-        f"ORDER BY fraud_tx_count DESC LIMIT {TOP_N_ACCOUNTS}"
+    # 사기 "수취" 계좌(nameDest) Top-N — mule 후보. 출발계좌(nameOrig)는 PaySim 특성상 전부 1건이라
+    # 무의미 → 목적지 기준 사기 수신 건수로. Silver 직접 조회.
+    mule_accounts = _bq_query(
+        f"SELECT nameDest, COUNT(*) FROM {BQ_SILVER} WHERE isFraud=1 "
+        f"GROUP BY nameDest ORDER BY 2 DESC LIMIT {TOP_N_ACCOUNTS}"
     )
 
     # ── 4) 전역 누적 KPI + 기존 룰 혼동행렬 ──
@@ -232,20 +235,22 @@ def _push_metrics(ds: str) -> None:
         "레이어 정합성(Gold 미탐지==Silver is_suspicious): 1=정합/0=불일치", registry=g_reg,
     ).set(reconcile_match)
 
-    # 일자별(d_ms) — 처리 행수(추세) + 층별 정합성 차이(무결성 시 0).
-    d_rows = Gauge("fraud_by_date_rows", "일자별 Silver 처리 행수", ["d_ms"], registry=g_reg)
-    d_bs   = Gauge("fraud_by_date_bs_diff",
-                   "Bronze(정상·유니크) − Silver (Bronze→Silver 무손실·무중복, 0이면 정합)",
-                   ["d_ms"], registry=g_reg)
-    d_sg   = Gauge("fraud_by_date_sg_diff",
-                   "Silver is_suspicious − Gold 미탐지 (Silver→Gold 정합, 0이면 정합)",
-                   ["d_ms"], registry=g_reg)
+    # 일자별(d_ms) — 처리 행수(추세) + 사기 건수 + 층별 정합성 차이(무결성 시 0).
+    d_rows  = Gauge("fraud_by_date_rows", "일자별 Silver 처리 행수", ["d_ms"], registry=g_reg)
+    d_fraud = Gauge("fraud_by_date_fraud", "일자별 사기(isFraud=1) 건수", ["d_ms"], registry=g_reg)
+    d_bs    = Gauge("fraud_by_date_bs_diff",
+                    "Bronze(정상·유니크) − Silver (Bronze→Silver 무손실·무중복, 0이면 정합)",
+                    ["d_ms"], registry=g_reg)
+    d_sg    = Gauge("fraud_by_date_sg_diff",
+                    "Silver is_suspicious − Gold 미탐지 (Silver→Gold 정합, 0이면 정합)",
+                    ["d_ms"], registry=g_reg)
     bs_max = sg_max = 0
-    for d_ms, rows, susp in by_date:
+    for d_ms, rows, fr, susp in by_date:
         key = str(d_ms)
         bs = int(bronze_by_ms.get(d_ms, 0)) - int(rows or 0)
         sg = int(susp or 0) - int(gold_by_ms.get(d_ms, 0))
         d_rows.labels(d_ms=key).set(float(rows or 0))
+        d_fraud.labels(d_ms=key).set(float(fr or 0))
         d_bs.labels(d_ms=key).set(float(bs))
         d_sg.labels(d_ms=key).set(float(sg))
         bs_max = max(bs_max, abs(bs)); sg_max = max(sg_max, abs(sg))
@@ -264,10 +269,10 @@ def _push_metrics(ds: str) -> None:
         type_tx.labels(type=str(tx_type)).set(float(t_tx or 0))
         type_fraud.labels(type=str(tx_type)).set(float(t_fraud or 0))
 
-    # 위험 계좌 Top-N(사기 건수 기준).
-    acct = Gauge("fraud_account_fraud_count", "계좌별 사기 거래 건수(Top-N)", ["account"], registry=g_reg)
-    for account_id, fraud_tx_count in top_accounts:
-        acct.labels(account=str(account_id)).set(float(fraud_tx_count or 0))
+    # 사기 수취 계좌(nameDest) Top-N — mule 후보.
+    mule = Gauge("fraud_mule_recv_count", "사기 수취 계좌 건수(nameDest, Top-N mule 후보)", ["account"], registry=g_reg)
+    for dest, cnt in mule_accounts:
+        mule.labels(account=str(dest)).set(float(cnt or 0))
 
     pushadd_to_gateway(PUSHGATEWAY, job="fraud_pipeline", registry=g_reg)
 
@@ -277,7 +282,7 @@ def _push_metrics(ds: str) -> None:
         f"precision={precision:.3f} recall={recall:.3f} reconcile_match={reconcile_match:.0f} | "
         f"bs_diff_max={bs_max} sg_diff_max={sg_max} (0=정합) | "
         f"undetected_total={undetected_total} dates={len(by_date)} hours={len(by_hour)} "
-        f"types={len(by_type)} top_accounts={len(top_accounts)} → Pushgateway"
+        f"types={len(by_type)} mule_accounts={len(mule_accounts)} → Pushgateway"
     )
 
 
