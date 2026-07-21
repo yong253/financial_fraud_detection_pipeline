@@ -274,6 +274,31 @@ def _push_metrics(ds: str) -> None:
     for dest, cnt in mule_accounts:
         mule.labels(account=str(dest)).set(float(cnt or 0))
 
+    # DAG run 성공/실패 — 트리거 날짜(logical date=tx_date)별. Prometheus airflow_* 엔 날짜 라벨이 없어
+    # Airflow 메타DB(DagRun)를 ORM으로 조회. 라벨 d_ms(날짜 자정 epoch ms)로 다른 일자별 패널과 통일.
+    from collections import defaultdict
+    from datetime import datetime as _dt, timezone as _tz
+
+    from airflow.models import DagRun
+    from airflow.utils.session import create_session
+
+    dr_succ, dr_fail, dr_seen = defaultdict(int), defaultdict(int), set()
+    with create_session() as _s:
+        for ex, st in _s.query(DagRun.execution_date, DagRun.state).filter(
+            DagRun.dag_id == "fraud_pipeline"
+        ).all():
+            ms = int(_dt(ex.year, ex.month, ex.day, tzinfo=_tz.utc).timestamp() * 1000)
+            dr_seen.add(ms)
+            if st == "success":
+                dr_succ[ms] += 1
+            elif st == "failed":
+                dr_fail[ms] += 1
+    g_dr_ok = Gauge("fraud_dagrun_success", "트리거 날짜별 DAG run 성공 수", ["d_ms"], registry=g_reg)
+    g_dr_ng = Gauge("fraud_dagrun_failed", "트리거 날짜별 DAG run 실패 수", ["d_ms"], registry=g_reg)
+    for ms in sorted(dr_seen):
+        g_dr_ok.labels(d_ms=str(ms)).set(float(dr_succ.get(ms, 0)))
+        g_dr_ng.labels(d_ms=str(ms)).set(float(dr_fail.get(ms, 0)))
+
     pushadd_to_gateway(PUSHGATEWAY, job="fraud_pipeline", registry=g_reg)
 
     print(
@@ -282,7 +307,7 @@ def _push_metrics(ds: str) -> None:
         f"precision={precision:.3f} recall={recall:.3f} reconcile_match={reconcile_match:.0f} | "
         f"bs_diff_max={bs_max} sg_diff_max={sg_max} (0=정합) | "
         f"undetected_total={undetected_total} dates={len(by_date)} hours={len(by_hour)} "
-        f"types={len(by_type)} mule_accounts={len(mule_accounts)} → Pushgateway"
+        f"types={len(by_type)} mule_accounts={len(mule_accounts)} dagruns={len(dr_seen)} → Pushgateway"
     )
 
 

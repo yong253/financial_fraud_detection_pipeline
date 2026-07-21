@@ -203,7 +203,8 @@ def test_mon8_rule_performance_metrics():
                    "fraud_by_date_rows", "fraud_by_date_fraud",
                    "fraud_by_date_bs_diff", "fraud_by_date_sg_diff",
                    "fraud_by_hour_tx", "fraud_by_hour_fraud",
-                   "fraud_type_fraud", "fraud_mule_recv_count"):
+                   "fraud_type_fraud", "fraud_mule_recv_count",
+                   "fraud_dagrun_success", "fraud_dagrun_failed"):
         assert metric in body, f"[MON8] 메트릭 누락: {metric}"
 
 

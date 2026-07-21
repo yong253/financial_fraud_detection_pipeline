@@ -221,7 +221,7 @@
 
     {
       "type": "row",
-      "title": "🔌 인프라 헬스 (Kafka 인제스트)",
+      "title": "🔌 인프라·운영 헬스 (Kafka · Airflow)",
       "gridPos": { "h": 1, "w": 24, "x": 0, "y": 38 },
       "collapsed": false,
       "panels": []
@@ -230,7 +230,7 @@
       "type": "stat",
       "title": "Kafka 브로커 수",
       "datasource": { "type": "prometheus", "uid": "fraud-prometheus" },
-      "gridPos": { "h": 5, "w": 8, "x": 0, "y": 39 },
+      "gridPos": { "h": 5, "w": 4, "x": 0, "y": 39 },
       "fieldConfig": { "defaults": { "thresholds": { "mode": "absolute", "steps": [ { "color": "red", "value": null }, { "color": "green", "value": 3 } ] } }, "overrides": [] },
       "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "colorMode": "value", "graphMode": "none" },
       "targets": [ { "refId": "A", "datasource": { "type": "prometheus", "uid": "fraud-prometheus" }, "expr": "kafka_brokers", "instant": true } ]
@@ -239,7 +239,7 @@
       "type": "stat",
       "title": "transactions 토픽 메시지 수",
       "datasource": { "type": "prometheus", "uid": "fraud-prometheus" },
-      "gridPos": { "h": 5, "w": 8, "x": 8, "y": 39 },
+      "gridPos": { "h": 5, "w": 4, "x": 4, "y": 39 },
       "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
       "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "colorMode": "value", "graphMode": "area" },
       "targets": [ { "refId": "A", "datasource": { "type": "prometheus", "uid": "fraud-prometheus" }, "expr": "sum(kafka_topic_partition_current_offset{topic=\"transactions\"})", "instant": true } ]
@@ -248,10 +248,32 @@
       "type": "stat",
       "title": "Consumer lag (밀린 메시지)",
       "datasource": { "type": "prometheus", "uid": "fraud-prometheus" },
-      "gridPos": { "h": 5, "w": 8, "x": 16, "y": 39 },
+      "gridPos": { "h": 5, "w": 4, "x": 8, "y": 39 },
       "fieldConfig": { "defaults": { "unit": "short", "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "orange", "value": 1000 }, { "color": "red", "value": 100000 } ] } }, "overrides": [] },
       "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "colorMode": "value", "graphMode": "area" },
       "targets": [ { "refId": "A", "datasource": { "type": "prometheus", "uid": "fraud-prometheus" }, "expr": "sum(kafka_consumergroup_lag{topic=\"transactions\"})" } ]
+    },
+    {
+      "type": "stat",
+      "title": "스케줄러 heartbeat (/분)",
+      "datasource": { "type": "prometheus", "uid": "fraud-prometheus" },
+      "gridPos": { "h": 5, "w": 4, "x": 12, "y": 39 },
+      "fieldConfig": { "defaults": { "unit": "short", "decimals": 0, "thresholds": { "mode": "absolute", "steps": [ { "color": "red", "value": null }, { "color": "green", "value": 1 } ] } }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "colorMode": "value", "graphMode": "area" },
+      "targets": [ { "refId": "A", "datasource": { "type": "prometheus", "uid": "fraud-prometheus" }, "expr": "rate(airflow_scheduler_heartbeat[5m]) * 60" } ]
+    },
+    {
+      "type": "barchart",
+      "title": "DAG run 성공/실패 (트리거 날짜별)",
+      "datasource": { "type": "prometheus", "uid": "fraud-prometheus" },
+      "gridPos": { "h": 5, "w": 8, "x": 16, "y": 39 },
+      "fieldConfig": { "defaults": { "unit": "short", "decimals": 0 }, "overrides": [ { "matcher": { "id": "byName", "options": "d_ms" }, "properties": [ { "id": "unit", "value": "time:MM-DD" } ] }, { "matcher": { "id": "byName", "options": "성공" }, "properties": [ { "id": "color", "value": { "mode": "fixed", "fixedColor": "green" } } ] }, { "matcher": { "id": "byName", "options": "실패" }, "properties": [ { "id": "color", "value": { "mode": "fixed", "fixedColor": "red" } } ] } ] },
+      "options": { "orientation": "auto", "showValue": "auto", "stacking": "none", "xField": "d_ms", "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "fraud-prometheus" }, "expr": "fraud_dagrun_success", "instant": true, "format": "table" },
+        { "refId": "B", "datasource": { "type": "prometheus", "uid": "fraud-prometheus" }, "expr": "fraud_dagrun_failed", "instant": true, "format": "table" }
+      ],
+      "transformations": [ { "id": "joinByField", "options": { "byField": "d_ms", "mode": "outer" } }, { "id": "convertFieldType", "options": { "conversions": [ { "targetField": "d_ms", "destinationType": "number" } ], "fields": {} } }, { "id": "organize", "options": { "excludeByName": { "Time": true, "Time 1": true, "Time 2": true, "__name__": true, "__name__ 1": true, "__name__ 2": true, "instance": true, "instance 1": true, "instance 2": true, "job": true, "job 1": true, "job 2": true, "exported_job": true, "exported_job 1": true, "exported_job 2": true }, "renameByName": { "Value #A": "성공", "Value #B": "실패" } } } ]
     }
   ]
 }
