@@ -390,8 +390,16 @@ services:
     container_name: pushgateway
     profiles: ["monitoring"]
     restart: unless-stopped
+    # 영속화: 배치가 push한 메트릭을 파일로 보존 → Docker 재시작에도 유지(메모리 전용이면 소실).
+    # user:root = 새 named volume(root 소유)에 nobody(uid 65534)가 쓰기 실패하는 이슈 회피(로컬 전용).
+    user: root
+    command:
+      - --persistence.file=/data/pushgateway.store
+      - --persistence.interval=1m
     ports:
       - "9091:9091"
+    volumes:
+      - pushgateway-data:/data
     networks:
       - fraud-net
 
@@ -453,6 +461,7 @@ volumes:
   airflow-pg-data:
   prometheus-data:
   grafana-data:
+  pushgateway-data:
 
 networks:
   fraud-net:
