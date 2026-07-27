@@ -28,8 +28,18 @@ from airflow.providers.google.cloud.transfers.local_to_gcs import LocalFilesyste
 
 STEP_EPOCH = "2016-01-01 00:00:00"   # batch_silver 와 동일 기준(step→tx_date)
 
+
+def _req(name: str) -> str:
+    """필수 환경변수. compose가 이미 :? 로 강제하므로 정상 경로에선 항상 설정돼 있다 —
+    누락 시 DAG import 단계에서 즉시 실패시켜 조용한 개인값 폴백을 막는다."""
+    v = os.getenv(name)
+    if not v:
+        raise ValueError(f"필수 환경변수 미설정: {name} — .env 확인")
+    return v
+
+
 # 단일 웨어하우스 = BigQuery. reconcile/push_metrics/bronze_sensor 가 fraud_bronze/fraud_silver/fraud_gold 조회.
-GCP_PROJECT_ID    = os.getenv("GCP_PROJECT_ID", "financial-pipeline-501007")
+GCP_PROJECT_ID    = _req("GCP_PROJECT_ID")
 BQ_DATASET_BRONZE = os.getenv("BQ_DATASET_BRONZE", "fraud_bronze")
 BQ_DATASET_SILVER = os.getenv("BQ_DATASET_SILVER", "fraud_silver")
 BQ_DATASET_GOLD   = os.getenv("BQ_DATASET_GOLD", "fraud_gold")
@@ -41,26 +51,24 @@ BQ_HOURLY     = f"`{GCP_PROJECT_ID}.{BQ_DATASET_GOLD}.hourly_summary`"
 
 # E단계: producer --realtime 마지막 날 완결 마커(GCS). Bronze 버킷(JSON 전용) 오염 방지 위해
 # staging 버킷에 둔다.
-FEED_DONE_URI = os.getenv(
-    "FEED_DONE_URI", "gs://financial-pipeline-501007-staging/_feed/ALL_DONE"
-)
+FEED_DONE_URI = _req("FEED_DONE_URI")
 
 # D단계: Dataproc Serverless 제출(spark_silver)용
 GCP_REGION         = os.getenv("GCP_REGION", "asia-northeast3")
-GCS_BUCKET_BRONZE  = os.getenv("GCS_BUCKET_BRONZE", "financial-pipeline-501007-bronze")
-GCS_BUCKET_SILVER  = os.getenv("GCS_BUCKET_SILVER", "financial-pipeline-501007-silver")
-GCS_BUCKET_STAGING = os.getenv("GCS_BUCKET_STAGING", "financial-pipeline-501007-staging")
-GCP_SA_EMAIL       = os.getenv("GCP_SA_EMAIL", "financial-service@financial-pipeline-501007.iam.gserviceaccount.com")
+GCS_BUCKET_BRONZE  = _req("GCS_BUCKET_BRONZE")
+GCS_BUCKET_SILVER  = _req("GCS_BUCKET_SILVER")
+GCS_BUCKET_STAGING = _req("GCS_BUCKET_STAGING")
+GCP_SA_EMAIL       = _req("GCP_SA_EMAIL")
 DATAPROC_RUNTIME   = "2.2"
 SPARK_CODE_URI     = f"gs://{GCS_BUCKET_STAGING}/code/batch_silver.py"
 
 PROJECT_DIR  = "/opt/airflow/project"
-COMPOSE      = "docker compose -f docker/docker-compose.yml"
+# compose 파일이 프로젝트 루트에 있으므로 project directory = /opt/airflow/project → 그 안의
+# .env(=호스트 루트 .env, 전체 프로젝트 바인드 마운트로 접근 가능)가 자동 로드된다.
+# -f를 절대경로로 줘 BashOperator의 임시 cwd와 무관하게 항상 정확히 해석되게 한다.
+COMPOSE      = f"docker compose -f {PROJECT_DIR}/docker-compose.yml"
 PUSHGATEWAY  = "pushgateway:9091"   # ⑥ 모니터링: 배치 records + 사기 KPI push 대상
 TOP_N_ACCOUNTS = 10                 # account_risk Top-N 게이지
-# 형제 잡(spark/dbt) 컨테이너의 바인드 마운트는 '호스트 절대경로'여야 한다(docker-out-of-docker).
-# 스케줄러에 상속된 HOST_PROJECT_DIR(=.. 가능)에 가려지지 않도록 .env에서 직접 export 해 덮어쓴다.
-ENV_PREFIX   = f"cd {PROJECT_DIR} && export $(grep -E '^HOST_PROJECT_DIR=' .env) && "
 
 default_args = {
     "owner": "fraud-pipeline",
@@ -373,12 +381,12 @@ with DAG(
 
     dbt_run = BashOperator(
         task_id="dbt_run",
-        bash_command=ENV_PREFIX + COMPOSE + " run --rm dbt run --profiles-dir .",
+        bash_command=COMPOSE + " run --rm dbt run --profiles-dir .",
     )
 
     dbt_test = BashOperator(
         task_id="dbt_test",
-        bash_command=ENV_PREFIX + COMPOSE + " run --rm dbt test --profiles-dir .",
+        bash_command=COMPOSE + " run --rm dbt test --profiles-dir .",
     )
 
     reconcile = PythonOperator(

@@ -11,6 +11,16 @@ jobs:
   deploy-dbt:
     runs-on: ubuntu-latest
     if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    # 실제 배포 대상 — compose가 :? 로 필수화한 개인 GCP 값을 Repository Variables(시크릿 아님,
+    # Settings → Secrets and variables → Actions → Variables)에서 가져온다. 미등록 시 빈 문자열이
+    # 되어 :? 가 발동해 배포가 실패한다(작성자 프로젝트로 조용히 배포되는 것보다 안전).
+    env:
+      GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+      GCS_BUCKET_BRONZE: ${{ vars.GCS_BUCKET_BRONZE }}
+      GCS_BUCKET_SILVER: ${{ vars.GCS_BUCKET_SILVER }}
+      GCS_BUCKET_STAGING: ${{ vars.GCS_BUCKET_STAGING }}
+      GCP_SA_EMAIL: ${{ vars.GCP_SA_EMAIL }}
+      FEED_DONE_URI: ${{ vars.FEED_DONE_URI }}
 
     steps:
       - name: 저장소 코드 가져오기
@@ -24,10 +34,10 @@ jobs:
           echo "${{ secrets.GCP_SA_KEY_B64 }}" | base64 -d > credentials/service_account.json
 
       - name: dbt run (Gold 테이블 실제 배포)
-        run: docker compose -f docker/docker-compose.yml run --rm dbt run --profiles-dir .
+        run: docker compose run --rm dbt run --profiles-dir .
 
       - name: dbt test (배포 직후 데이터 품질 검증)
-        run: docker compose -f docker/docker-compose.yml run --rm dbt test --profiles-dir .
+        run: docker compose run --rm dbt test --profiles-dir .
 
       - name: 자격증명 정리
         if: always()

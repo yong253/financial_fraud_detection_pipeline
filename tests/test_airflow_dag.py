@@ -4,7 +4,7 @@
 E2E/증분/멱등 검증은 이제 GCS/BQ 기반 `airflow dags test` + 실제 Dataproc 배치 제출로
 대체됐다(Part2: 로컬 datalake·DuckDB 의존 테스트 AF3/AF4/AF6 제거).
 
-전제: `docker compose -f docker/docker-compose.yml up -d` 로 airflow 스택 + kafka 가 떠 있음.
+전제: `docker compose up -d` 로 airflow 스택 + kafka 가 떠 있음.
 
 실행:
   pytest tests/test_airflow_dag.py -v

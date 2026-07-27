@@ -4,7 +4,7 @@
 컨테이너로 검증한다. 무거운 것은 `@pytest.mark.slow`.
 
 전제(slow):
-  docker compose -f docker/docker-compose.yml --profile monitoring up -d  # 모니터링 스택
+  docker compose --profile monitoring up -d  # 모니터링 스택
   + ⑤ 파이프라인이 1회 실행되어 BigQuery Gold(`fraud_gold.undetected_fraud`)가 존재.
 
 실행:
@@ -22,12 +22,13 @@ import pytest
 import yaml
 
 ROOT       = Path(__file__).parent.parent
-COMPOSE    = ["docker", "compose", "-f", str(ROOT / "docker" / "docker-compose.yml")]
+COMPOSE    = ["docker", "compose", "-f", str(ROOT / "docker-compose.yml")]
 SCHEDULER  = "airflow-scheduler"
 DS_UID     = "fraud-prometheus"   # provisioning 데이터소스 uid (대시보드가 참조)
 
-# MON6: Gold(BigQuery) 대조용. DAG의 기본값과 동일(env 폴백).
-GCP_PROJECT_ID  = os.getenv("GCP_PROJECT_ID", "financial-pipeline-501007")
+# MON6(slow): Gold(BigQuery) 대조용. GCP_PROJECT_ID는 개인 식별값이라 기본값 없음(compose가 :? 로
+# 필수화) — 실행 시 .env에 설정돼 있어야 한다. BQ_DATASET_GOLD는 공용 상수라 폴백 유지.
+GCP_PROJECT_ID  = os.getenv("GCP_PROJECT_ID")
 BQ_DATASET_GOLD = os.getenv("BQ_DATASET_GOLD", "fraud_gold")
 
 PROM_YML   = ROOT / "prometheus" / "prometheus.yml"

@@ -1,12 +1,13 @@
 # 단일 웨어하우스: BigQuery.
-# dbt는 .env를 자동 로드하지 않으므로 env_var 기본값 필수.
+# dbt는 .env를 자동 로드하지 않는다 — compose의 dbt 서비스가 environment로 주입한 값을 쓴다.
+# GCP_PROJECT_ID는 개인 식별값이라 기본값을 두지 않는다(compose가 :? 로 이미 필수화했음).
 fraud_dbt:
   target: prod
   outputs:
     prod:
       type: bigquery
       method: service-account
-      project:  "{{ env_var('GCP_PROJECT_ID', 'financial-pipeline-501007') }}"
+      project:  "{{ env_var('GCP_PROJECT_ID') }}"
       dataset:  "{{ env_var('BQ_DATASET_GOLD', 'fraud_gold') }}"
       keyfile:  "{{ env_var('GCP_KEYFILE', '/credentials/service_account.json') }}"
       location: "{{ env_var('GCP_REGION', 'asia-northeast3') }}"
