@@ -74,6 +74,10 @@ x-airflow-common: &airflow-common
     BQ_DATASET_GOLD: ${BQ_DATASET_GOLD:-fraud_gold}
     # ── E단계: bronze_sensor GCS/BQ 센싱용 ──
     BQ_DATASET_BRONZE: ${BQ_DATASET_BRONZE:-fraud_bronze}
+    # step→tx_date 기준시각. DAG가 읽어 Spark(--step-epoch)로 전달하는 단일 출처 —
+    # 리터럴 기본값은 여기 한 곳에만 둔다(.env에 값이 있으면 그쪽이 우선).
+    # ★ 변경 시 이미 적재된 Silver의 tx_date와 어긋나므로 전량 재처리 필수.
+    STEP_EPOCH: ${STEP_EPOCH:-2016-01-01 00:00:00}
     FEED_DONE_URI: ${FEED_DONE_URI:?.env에 FEED_DONE_URI를 설정하세요}
     GOOGLE_APPLICATION_CREDENTIALS: /opt/airflow/project/credentials/service_account.json
     # ── D단계: Dataproc 제출(DataprocCreateBatchOperator) + GCS 코드 업로드용 ──

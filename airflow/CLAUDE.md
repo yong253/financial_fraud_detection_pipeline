@@ -11,6 +11,8 @@ Bronze → Spark Batch(Dataproc) → Silver → DBT → Gold → Grafana
 - **처리 모델 = 이벤트시간(tx_date) 일별 증분:** DAG run 1개 = 하루치(`{{ ds }}`), catchup 백필.
 - 태스크: `bronze_sensor → spark_silver({{ds}}) → dbt_run → dbt_test → reconcile → push_metrics`
   - `spark_silver`: DataprocCreateBatchOperator(Serverless). `upload_spark_code`가 코드→GCS 동기화.
+    `STEP_EPOCH`(step→tx_date 기준시각)는 **DAG가 단일 출처로 소유**하고 `--step-epoch`로
+    batch_silver에 전달 — 양쪽 하드코딩 금지(리터럴 기본값은 docker-compose.yml 한 곳).
   - `reconcile`: **레이어 간 무손실·무중복 정합성 검증** — `undetected_fraud`(Gold) ==
     `silver is_suspicious`(Silver) 등식으로 Silver→Gold 이동 중 행 유실/중복이 없었는지 확인,
     불일치 시 DAG 실패(검증 절차·명령은 `verify-reconciliation` 스킬 참조).

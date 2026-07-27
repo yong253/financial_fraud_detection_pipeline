@@ -27,7 +27,9 @@ def _parse_config():
     p = argparse.ArgumentParser(description="Bronze→Silver Spark 배치")
     p.add_argument("--bronze-path",    required=True)  # gs://.../topics/transactions
     p.add_argument("--silver-path",    required=True)  # gs://...-silver
-    p.add_argument("--step-epoch",     default=os.getenv("STEP_EPOCH", "2016-01-01 00:00:00"))
+    # step-epoch는 env 폴백을 두지 않는다 — Dataproc Serverless엔 STEP_EPOCH env가 없어
+    # 폴백이 항상 발동했고, DAG의 기준시각과 조용히 어긋날 수 있었다(단일 출처 = DAG).
+    p.add_argument("--step-epoch",     required=True)  # DAG가 항상 전달(step→tx_date 단일 출처)
     p.add_argument("--target-tx-date", default=os.getenv("TARGET_TX_DATE"))
     args, _ = p.parse_known_args()
     return args
