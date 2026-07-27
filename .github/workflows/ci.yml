@@ -9,6 +9,16 @@ name: CI                      # Actions 탭에 표시될 워크플로 이름
 jobs:
   lint-and-test:                # 잡 이름(임의로 지정 가능)
     runs-on: ubuntu-latest       # GitHub이 띄워주는 임시 우분투 VM에서 실행
+    # compose가 개인 GCP 값을 필수로 요구(:? 문법)하므로, 실제 GCP 접근이 없는 이 잡엔 더미값을
+    # 채워 인터폴레이션만 통과시킨다. HOST_PROJECT_DIR은 의도적으로 미설정 — '.'(런너 워크스페이스)
+    # 폴백이 실제로 정상 동작하는지 이 CI가 매번 검증하는 역할도 겸한다.
+    env:
+      GCP_PROJECT_ID: ci-dummy-project
+      FEED_DONE_URI: gs://ci-dummy-staging/_feed/ALL_DONE
+      GCS_BUCKET_BRONZE: ci-dummy-bronze
+      GCS_BUCKET_SILVER: ci-dummy-silver
+      GCS_BUCKET_STAGING: ci-dummy-staging
+      GCP_SA_EMAIL: ci-dummy@ci-dummy-project.iam.gserviceaccount.com
 
     steps:
       - name: 저장소 코드 가져오기
@@ -20,19 +30,19 @@ jobs:
           python-version: "3.11"        # 로컬 개발 환경과 동일 버전
 
       - name: 필요한 패키지 설치
-        run: pip install ruff pytest pyyaml   # 이번 잡에 필요한 최소 패키지만
+        run: pip install ruff==0.16.0 pytest==8.3.2 pyyaml==6.0.2   # requirements.txt와 버전 고정 일치(재현성) — 최소 패키지만
 
       - name: Lint (코드 스타일 검사)
         run: ruff check .
 
       - name: dbt 모델 컴파일 체크 (SQL/Jinja 문법 + ref 검증, GCP 인증 불필요)
-        run: docker compose -f docker/docker-compose.yml run --rm dbt parse --profiles-dir .
+        run: docker compose run --rm dbt parse --profiles-dir .
 
       - name: Airflow 로그/플러그인 디렉토리 준비 (CI엔 없어서 root 소유로 자동생성되는 문제 방지)
         run: mkdir -p airflow/logs airflow/plugins && chmod -R 777 airflow/logs airflow/plugins
 
       - name: Airflow 스택 기동 (AF1/AF2용 — airflow-scheduler만, Kafka/GCP 키 불필요)
-        run: docker compose -f docker/docker-compose.yml up -d --build airflow-scheduler
+        run: docker compose up -d --build airflow-scheduler
 
       - name: Airflow 스케줄러 준비 대기
         run: timeout 240 bash -c 'until docker exec airflow-scheduler airflow db check; do sleep 5; done'
@@ -42,11 +52,11 @@ jobs:
 
       - name: 실패 시 Airflow 로그 덤프
         if: failure()
-        run: docker compose -f docker/docker-compose.yml logs airflow-init airflow-postgres airflow-scheduler
+        run: docker compose logs airflow-init airflow-postgres airflow-scheduler
 
       - name: Airflow 스택 정리
         if: always()
-        run: docker compose -f docker/docker-compose.yml down -v
+        run: docker compose down -v
 
       - name: 모니터링 설정 테스트 (외부 서비스/자격증명 불필요)
         run: pytest tests/test_monitoring.py -m "not slow" -v

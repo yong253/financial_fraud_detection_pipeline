@@ -10,7 +10,7 @@ Medallion **Gold** 레이어 (dbt-bigquery, 데이터셋 `fraud_gold`):
 - `models/staging/` — `stg_silver_transactions`(BQ source 단일), `sources.yml`(silver source)
 - `models/gold/` — 위 3모델 + `schema.yml`(테스트)
 - `profiles.yml` — BigQuery 단일(target=prod). 실행:
-  `docker compose -f docker/docker-compose.yml --env-file .env run --rm dbt run --profiles-dir .`
+  `docker compose run --rm dbt run --profiles-dir .`
 
 규칙:
 - **DBT 모델에는 `not_null`, `unique` 테스트를 반드시 작성한다.** (루트 개발 규칙)

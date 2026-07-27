@@ -13,7 +13,7 @@ Airflow 운영(StatsD) → statsd-exporter ─┼→ Prometheus → Grafana(단�
 
 기동:
 ```
-docker compose -f docker/docker-compose.yml --profile monitoring up -d
+docker compose --profile monitoring up -d
 ```
 
 포트: Prometheus 9090 / Pushgateway 9091 / Grafana 3000(admin/admin) / kafka-exporter 9308 / statsd-exporter 9102

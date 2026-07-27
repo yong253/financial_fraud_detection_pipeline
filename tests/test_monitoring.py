@@ -4,7 +4,7 @@
 컨테이너로 검증한다. 무거운 것은 `@pytest.mark.slow`.
 
 전제(slow):
-  docker compose -f docker/docker-compose.yml --profile monitoring up -d  # 모니터링 스택
+  docker compose --profile monitoring up -d  # 모니터링 스택
   + ⑤ 파이프라인이 1회 실행되어 BigQuery Gold(`fraud_gold.undetected_fraud`)가 존재.
 
 실행:
@@ -22,12 +22,13 @@ import pytest
 import yaml
 
 ROOT       = Path(__file__).parent.parent
-COMPOSE    = ["docker", "compose", "-f", str(ROOT / "docker" / "docker-compose.yml")]
+COMPOSE    = ["docker", "compose", "-f", str(ROOT / "docker-compose.yml")]
 SCHEDULER  = "airflow-scheduler"
 DS_UID     = "fraud-prometheus"   # provisioning 데이터소스 uid (대시보드가 참조)
 
-# MON6: Gold(BigQuery) 대조용. DAG의 기본값과 동일(env 폴백).
-GCP_PROJECT_ID  = os.getenv("GCP_PROJECT_ID", "financial-pipeline-501007")
+# MON6(slow): Gold(BigQuery) 대조용. GCP_PROJECT_ID는 개인 식별값이라 기본값 없음(compose가 :? 로
+# 필수화) — 실행 시 .env에 설정돼 있어야 한다. BQ_DATASET_GOLD는 공용 상수라 폴백 유지.
+GCP_PROJECT_ID  = os.getenv("GCP_PROJECT_ID")
 BQ_DATASET_GOLD = os.getenv("BQ_DATASET_GOLD", "fraud_gold")
 
 PROM_YML   = ROOT / "prometheus" / "prometheus.yml"
@@ -53,6 +54,7 @@ def _exec(*args, timeout=300):
     r = subprocess.run(
         ["docker", "exec", SCHEDULER, *args],
         capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout,
+        check=False,
     )
     return r.returncode, r.stdout + r.stderr
 
@@ -60,8 +62,7 @@ def _exec(*args, timeout=300):
 def _iter_panels(dash: dict):
     for p in dash.get("panels", []):
         yield p
-        for sub in p.get("panels", []):
-            yield sub
+        yield from p.get("panels", [])
 
 
 # ── MON1: 설정 파일 파싱 ─────────────────────────────────────────────────────
@@ -110,7 +111,7 @@ def test_mon3_compose_profile_renders():
     r = subprocess.run(
         [*COMPOSE, "--profile", "monitoring", "config", "--services"],
         capture_output=True, text=True, encoding="utf-8", errors="replace",
-        timeout=120, cwd=ROOT,
+        timeout=120, cwd=ROOT, check=False,
     )
     assert r.returncode == 0, f"[MON3] config 실패\n{r.stderr}"
     services = set(r.stdout.split())
@@ -127,6 +128,7 @@ def test_mon4_promtool_check_config():
          "-v", f"{PROM_YML.as_posix()}:/p.yml:ro",
          "prom/prometheus:v2.53.0", "check", "config", "/p.yml"],
         capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=300,
+        check=False,
     )
     assert r.returncode == 0, f"[MON4] promtool 실패\n{r.stdout}{r.stderr}"
     assert "SUCCESS" in (r.stdout + r.stderr)
@@ -170,9 +172,9 @@ def test_mon6_push_metrics_e2e():
     from google.cloud import bigquery
 
     client = bigquery.Client(project=GCP_PROJECT_ID)
-    gold = list(client.query(
+    gold = next(iter(client.query(
         f"SELECT count(*) FROM `{GCP_PROJECT_ID}.{BQ_DATASET_GOLD}.undetected_fraud`"
-    ).result())[0][0]
+    ).result()))[0]
     results = []
     for _ in range(15):
         code, body = _http("http://localhost:9090/api/v1/query?query=fraud_undetected_total")

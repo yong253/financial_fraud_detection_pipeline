@@ -40,12 +40,12 @@ import os
 from diagrams import Cluster, Diagram, Edge, Node
 from diagrams.gcp.analytics import BigQuery, Dataproc
 from diagrams.gcp.storage import GCS
+from diagrams.generic.storage import Storage
 from diagrams.onprem.analytics import Dbt
 from diagrams.onprem.client import Client
 from diagrams.onprem.monitoring import Grafana, Prometheus
 from diagrams.onprem.queue import Kafka
 from diagrams.onprem.workflow import Airflow
-from diagrams.generic.storage import Storage
 from diagrams.programming.language import Python
 
 OUT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -77,15 +77,15 @@ LANE = {"bgcolor": "white", "pencolor": INK, "penwidth": "1.3", "fontsize": "15"
 LANE_DASHED = {**LANE, "style": "dashed"}
 
 # Color reserved for the medallion cards only (small filled chips, not whole lanes).
-BRONZE_CARD = dict(shape="box", style="filled,rounded", fillcolor="#C98A3E", color="#8A5A22",
-                    fontname=FONT, fontsize="13", fontcolor="white", fixedsize="false",
-                    width="1.3", height="0.6", margin="0.15,0.08")
-SILVER_CARD = dict(shape="box", style="filled,rounded", fillcolor="#B7BEC6", color="#7A828A",
-                    fontname=FONT, fontsize="13", fontcolor="#20242A", fixedsize="false",
-                    width="1.3", height="0.6", margin="0.15,0.08")
-GOLD_CARD = dict(shape="box", style="filled,rounded", fillcolor="#EFC94C", color="#A9862A",
-                  fontname=FONT, fontsize="13", fontcolor="#4A3B0A", fixedsize="false",
-                  width="1.3", height="0.6", margin="0.15,0.08")
+BRONZE_CARD = {"shape": "box", "style": "filled,rounded", "fillcolor": "#C98A3E", "color": "#8A5A22",
+               "fontname": FONT, "fontsize": "13", "fontcolor": "white", "fixedsize": "false",
+               "width": "1.3", "height": "0.6", "margin": "0.15,0.08"}
+SILVER_CARD = {"shape": "box", "style": "filled,rounded", "fillcolor": "#B7BEC6", "color": "#7A828A",
+               "fontname": FONT, "fontsize": "13", "fontcolor": "#20242A", "fixedsize": "false",
+               "width": "1.3", "height": "0.6", "margin": "0.15,0.08"}
+GOLD_CARD = {"shape": "box", "style": "filled,rounded", "fillcolor": "#EFC94C", "color": "#A9862A",
+             "fontname": FONT, "fontsize": "13", "fontcolor": "#4A3B0A", "fixedsize": "false",
+             "width": "1.3", "height": "0.6", "margin": "0.15,0.08"}
 
 def _pos(x: float, y: float) -> str:
     """Pinned neato position (points, origin bottom-left, y up)."""
@@ -121,7 +121,7 @@ def build_architecture() -> None:
             bronze = Node("Bronze", pos=_pos(400, 150), **BRONZE_CARD)
             silver = Node("Silver", pos=_pos(530, 150), **SILVER_CARD)
             gold = Node("Gold", pos=_pos(660, 150), **GOLD_CARD)
-            gcs = GCS("GCS", pos=_pos(790, 150))
+            _gcs = GCS("GCS", pos=_pos(790, 150))  # 변수 미사용 — Node 생성 자체가 다이어그램 등록(부작용)
 
         # Outer wrapper box — mirrors the reference image's single unlabeled big
         # box that holds BOTH "Processing Layer" and "Serving Layer" (the two are
@@ -132,17 +132,17 @@ def build_architecture() -> None:
         # combined width of Data Processing + Monitoring (previously it stopped
         # short of Monitoring, leaving it floating outside — the bug being fixed).
         with Cluster("", graph_attr=LANE):
-            corner_tl = Node("", pos=_pos(355, 585), shape="point", style="invis", width="0.01")
-            corner_br = Node("", pos=_pos(1160, 275), shape="point", style="invis", width="0.01")
+            _corner_tl = Node("", pos=_pos(355, 585), shape="point", style="invis", width="0.01")
+            _corner_br = Node("", pos=_pos(1160, 275), shape="point", style="invis", width="0.01")
 
         # Floating layer titles (text only, no box), positioned above each half of
         # the wrapper — exactly like the reference's "Processing Layer" / "Serving
         # Layer" labels sitting over one shared box.
-        processing_label = Node(
+        _processing_label = Node(
             "Processing Layer", pos=_pos(530, 610), shape="plaintext",
             fontsize="16", fontname=FONT, fontcolor=INK,
         )
-        serving_label = Node(
+        _serving_label = Node(
             "Serving Layer", pos=_pos(980, 610), shape="plaintext",
             fontsize="16", fontname=FONT, fontcolor=INK,
         )
@@ -150,9 +150,9 @@ def build_architecture() -> None:
         # Task Orchestration spans the full width of Data Processing + Monitoring
         # combined (reference: Airflow bar stretches across the whole bottom row).
         with Cluster("Task Orchestration", graph_attr=LANE):
-            anchor_l = Node("", pos=_pos(400, 495), shape="point", style="invis", width="0.01")
-            airflow = Airflow("Airflow", pos=_pos(755, 495))
-            anchor_r = Node("", pos=_pos(1110, 495), shape="point", style="invis", width="0.01")
+            _anchor_l = Node("", pos=_pos(400, 495), shape="point", style="invis", width="0.01")
+            _airflow = Airflow("Airflow", pos=_pos(755, 495))
+            _anchor_r = Node("", pos=_pos(1110, 495), shape="point", style="invis", width="0.01")
 
         with Cluster("Data Processing", graph_attr=LANE):
             spark = Dataproc("Spark\n(Dataproc)", pos=_pos(400, 330))

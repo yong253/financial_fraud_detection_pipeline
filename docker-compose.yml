@@ -1,6 +1,6 @@
 # ============================================================
 #  Kafka 스택 — 3-브로커 KRaft 클러스터 (금융 데이터 정합성)
-#  실행:  docker compose -f docker/docker-compose.yml up -d
+#  실행:  docker compose up -d
 #  확인:  http://localhost:8080  (Kafka UI 에서 브로커 3개 + transactions 토픽)
 #
 #  정합성 설정:
@@ -48,7 +48,7 @@ x-kafka-env: &kafka-env
 # Airflow 3개 서비스(init/webserver/scheduler) 공통 설정 — LocalExecutor
 x-airflow-common: &airflow-common
   build:
-    context: ${HOST_PROJECT_DIR:-..}/airflow
+    context: ${HOST_PROJECT_DIR:-.}/airflow
     dockerfile: Dockerfile
   image: fraud-airflow:local
   user: "50000:0"   # airflow UID 50000 + root그룹(GID 0) → docker.sock 접근
@@ -65,30 +65,30 @@ x-airflow-common: &airflow-common
     AIRFLOW__METRICS__STATSD_HOST: statsd-exporter
     AIRFLOW__METRICS__STATSD_PORT: "9125"
     AIRFLOW__METRICS__STATSD_PREFIX: airflow
-    # 주의: HOST_PROJECT_DIR는 컨테이너 env로 주지 않는다. 형제 잡 실행 시 .env의 절대값이
-    # shell env에 가려지면 안 되기 때문. DAG BashOperator가 .env에서 직접 export 한다.
-    PROJECT_COMPOSE_DIR: /opt/airflow/project
+    # 주의: HOST_PROJECT_DIR는 컨테이너 env로 주지 않는다. compose는 프로젝트 디렉터리
+    # (=이 파일이 있는 루트)의 .env를 자동 로드하므로, 형제 잡(DooD) 실행 시에도 값이 shell env에
+    # 가려지지 않고 정확히 전달된다(별도 export 불필요).
     # ── BigQuery(reconcile/push_metrics) 조회용. 프로젝트 마운트에 SA 키 포함 → 별도 마운트 불필요 ──
-    GCP_PROJECT_ID: ${GCP_PROJECT_ID:-financial-pipeline-501007}
+    GCP_PROJECT_ID: ${GCP_PROJECT_ID:?.env에 GCP_PROJECT_ID를 설정하세요}
     BQ_DATASET_SILVER: ${BQ_DATASET_SILVER:-fraud_silver}
     BQ_DATASET_GOLD: ${BQ_DATASET_GOLD:-fraud_gold}
     # ── E단계: bronze_sensor GCS/BQ 센싱용 ──
     BQ_DATASET_BRONZE: ${BQ_DATASET_BRONZE:-fraud_bronze}
-    FEED_DONE_URI: ${FEED_DONE_URI:-gs://financial-pipeline-501007-staging/_feed/ALL_DONE}
+    FEED_DONE_URI: ${FEED_DONE_URI:?.env에 FEED_DONE_URI를 설정하세요}
     GOOGLE_APPLICATION_CREDENTIALS: /opt/airflow/project/credentials/service_account.json
     # ── D단계: Dataproc 제출(DataprocCreateBatchOperator) + GCS 코드 업로드용 ──
     GCP_REGION: ${GCP_REGION:-asia-northeast3}
-    GCS_BUCKET_BRONZE: ${GCS_BUCKET_BRONZE:-financial-pipeline-501007-bronze}
-    GCS_BUCKET_SILVER: ${GCS_BUCKET_SILVER:-financial-pipeline-501007-silver}
-    GCS_BUCKET_STAGING: ${GCS_BUCKET_STAGING:-financial-pipeline-501007-staging}
-    GCP_SA_EMAIL: ${GCP_SA_EMAIL:-financial-service@financial-pipeline-501007.iam.gserviceaccount.com}
+    GCS_BUCKET_BRONZE: ${GCS_BUCKET_BRONZE:?.env에 GCS_BUCKET_BRONZE를 설정하세요}
+    GCS_BUCKET_SILVER: ${GCS_BUCKET_SILVER:?.env에 GCS_BUCKET_SILVER를 설정하세요}
+    GCS_BUCKET_STAGING: ${GCS_BUCKET_STAGING:?.env에 GCS_BUCKET_STAGING을 설정하세요}
+    GCP_SA_EMAIL: ${GCP_SA_EMAIL:?.env에 GCP_SA_EMAIL을 설정하세요}
     # google 프로바이더 기본 연결이 ADC(GOOGLE_APPLICATION_CREDENTIALS)를 쓰도록 — 별도 커넥션 설정 불필요
     AIRFLOW_CONN_GOOGLE_CLOUD_DEFAULT: "google-cloud-platform://"
   volumes:
-    - ${HOST_PROJECT_DIR:-..}/airflow/dags:/opt/airflow/dags
-    - ${HOST_PROJECT_DIR:-..}/airflow/logs:/opt/airflow/logs
-    - ${HOST_PROJECT_DIR:-..}/airflow/plugins:/opt/airflow/plugins
-    - ${HOST_PROJECT_DIR:-..}:/opt/airflow/project   # compose 파일/잡 코드 접근
+    - ${HOST_PROJECT_DIR:-.}/airflow/dags:/opt/airflow/dags
+    - ${HOST_PROJECT_DIR:-.}/airflow/logs:/opt/airflow/logs
+    - ${HOST_PROJECT_DIR:-.}/airflow/plugins:/opt/airflow/plugins
+    - ${HOST_PROJECT_DIR:-.}:/opt/airflow/project   # compose 파일/잡 코드 접근
     - /var/run/docker.sock:/var/run/docker.sock
   networks:
     - fraud-net
@@ -158,11 +158,11 @@ services:
       - fraud-net
 
   # ── E단계 수집: Kafka Connect + GCS Sink (상시 인제스트, DAG 밖) ──────────
-  # 기동: docker compose -f docker/docker-compose.yml --profile connect up -d --build
+  # 기동: docker compose --profile connect up -d --build
   # profile=connect 전용(기본 up엔 안 뜸) — SA 키 없는 개발 환경 크래시 방지.
   kafka-connect:
     build:
-      context: ${HOST_PROJECT_DIR:-..}/kafka/connect
+      context: ${HOST_PROJECT_DIR:-.}/kafka/connect
       dockerfile: Dockerfile
     image: fraud-connect:local
     container_name: kafka-connect
@@ -194,7 +194,7 @@ services:
       CONNECT_PLUGIN_PATH: "/usr/share/java,/usr/share/confluent-hub-components"
       GOOGLE_APPLICATION_CREDENTIALS: /credentials/service_account.json
     volumes:
-      - ${HOST_PROJECT_DIR:-..}/credentials:/credentials:ro
+      - ${HOST_PROJECT_DIR:-.}/credentials:/credentials:ro
     networks:
       - fraud-net
     healthcheck:
@@ -213,7 +213,7 @@ services:
       kafka-connect:
         condition: service_healthy
     volumes:
-      - ${HOST_PROJECT_DIR:-..}/kafka/connect:/config:ro
+      - ${HOST_PROJECT_DIR:-.}/kafka/connect:/config:ro
     entrypoint: ["/bin/sh", "-c"]
     command:
       - |
@@ -244,35 +244,39 @@ services:
       - fraud-net
 
   # dbt (Silver → Gold). profile 지정으로 `up`엔 안 뜸.
-  # 실행: docker compose -f docker/docker-compose.yml run --rm dbt run --profiles-dir .
-  #       docker compose -f docker/docker-compose.yml run --rm dbt test --profiles-dir .
+  # 실행: docker compose run --rm dbt run --profiles-dir .
+  #       docker compose run --rm dbt test --profiles-dir .
   dbt:
     build:
-      context: ../dbt
+      # build context는 CLI(클라이언트)가 tar로 올리므로 '클라이언트 파일시스템' 기준 경로여야
+      # 한다. 바인드 마운트(데몬이 해석 → 호스트 절대경로 필요)와는 반대다. 스케줄러 컨테이너
+      # 안에서 실행될 때 ./dbt = /opt/airflow/project/dbt 로 정상 해석됨 — HOST_PROJECT_DIR을
+      # 쓰면 호스트 경로를 컨테이너 안 CLI에 넘기게 되어 빌드가 깨진다.
+      context: ./dbt
       dockerfile: Dockerfile
     image: fraud-dbt:local
     profiles: ["jobs"]
     working_dir: /dbt
     environment:
       # ── BigQuery 타깃용. 값은 루트 .env에서 주입(없으면 기본값) ──
-      GCP_PROJECT_ID: ${GCP_PROJECT_ID:-financial-pipeline-501007}
+      GCP_PROJECT_ID: ${GCP_PROJECT_ID:?.env에 GCP_PROJECT_ID를 설정하세요}
       BQ_DATASET_SILVER: ${BQ_DATASET_SILVER:-fraud_silver}
       BQ_DATASET_GOLD: ${BQ_DATASET_GOLD:-fraud_gold}
       GCP_REGION: ${GCP_REGION:-asia-northeast3}
       GCP_KEYFILE: /credentials/service_account.json
     volumes:
-      - ${HOST_PROJECT_DIR:-..}/dbt:/dbt
-      - ${HOST_PROJECT_DIR:-..}/credentials:/credentials:ro
+      - ${HOST_PROJECT_DIR:-.}/dbt:/dbt
+      - ${HOST_PROJECT_DIR:-.}/credentials:/credentials:ro
     networks:
       - fraud-net
     command: ["run", "--profiles-dir", "."]
 
   # CSV → Kafka Producer(컨테이너화, ★ 최종 전환 작업). profile 지정으로 `up`엔 안 뜸.
-  # 스모크: docker compose -f docker/docker-compose.yml --profile producer run --rm producer
+  # 스모크: docker compose --profile producer run --rm producer
   # 오버라이드: ... run --rm producer python producer.py --realtime --done-marker gs://...
   producer:
     build:
-      context: ${HOST_PROJECT_DIR:-..}/kafka
+      context: ${HOST_PROJECT_DIR:-.}/kafka
       dockerfile: Dockerfile
     image: fraud-producer:local
     profiles: ["producer"]
@@ -291,9 +295,9 @@ services:
       RAW_CSV_PATH: /app/data/raw/Synthetic_Financial_datasets_log.csv
       GCP_CREDENTIALS_PATH: /credentials/service_account.json
     volumes:
-      - ${HOST_PROJECT_DIR:-..}/kafka:/app/kafka
-      - ${HOST_PROJECT_DIR:-..}/data:/app/data
-      - ${HOST_PROJECT_DIR:-..}/credentials:/credentials:ro
+      - ${HOST_PROJECT_DIR:-.}/kafka:/app/kafka
+      - ${HOST_PROJECT_DIR:-.}/data:/app/data
+      - ${HOST_PROJECT_DIR:-.}/credentials:/credentials:ro
     networks:
       - fraud-net
     command: ["python", "producer.py", "--limit", "1000"]
@@ -363,7 +367,7 @@ services:
         condition: service_completed_successfully
 
   # ── ⑥ 모니터링 스택 (profile=monitoring) ──────────────────────────────────
-  # 기동: docker compose -f docker/docker-compose.yml --profile monitoring up -d
+  # 기동: docker compose --profile monitoring up -d
   #   - Kafka 인제스트 헬스: kafka-exporter → Prometheus
   #   - Airflow 운영 메트릭: statsd-exporter → Prometheus
   #   - 배치 records + 사기 KPI: DAG가 Pushgateway로 push → Prometheus
@@ -377,7 +381,7 @@ services:
     ports:
       - "9090:9090"
     volumes:
-      - ${HOST_PROJECT_DIR:-..}/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ${HOST_PROJECT_DIR:-.}/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - prometheus-data:/prometheus
     command:
       - --config.file=/etc/prometheus/prometheus.yml
@@ -426,7 +430,7 @@ services:
       - "9102:9102"     # Prometheus scrape (HTTP)
       - "9125:9125/udp" # Airflow StatsD 수신 (UDP)
     volumes:
-      - ${HOST_PROJECT_DIR:-..}/prometheus/statsd_mapping.yml:/etc/statsd/mapping.yml:ro
+      - ${HOST_PROJECT_DIR:-.}/prometheus/statsd_mapping.yml:/etc/statsd/mapping.yml:ro
     command:
       - --statsd.mapping-config=/etc/statsd/mapping.yml
       - --statsd.listen-udp=:9125
@@ -446,8 +450,8 @@ services:
       GF_SECURITY_ADMIN_PASSWORD: admin
       GF_USERS_ALLOW_SIGN_UP: "false"
     volumes:
-      - ${HOST_PROJECT_DIR:-..}/grafana/provisioning:/etc/grafana/provisioning:ro
-      - ${HOST_PROJECT_DIR:-..}/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - ${HOST_PROJECT_DIR:-.}/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ${HOST_PROJECT_DIR:-.}/grafana/dashboards:/var/lib/grafana/dashboards:ro
       - grafana-data:/var/lib/grafana
     depends_on:
       - prometheus

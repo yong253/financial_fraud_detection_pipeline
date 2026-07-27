@@ -17,7 +17,7 @@ import os
 
 from pyspark.sql import SparkSession
 from pyspark.sql import functions as F
-from pyspark.sql.types import DecimalType, LongType, StructField, StructType, StringType
+from pyspark.sql.types import DecimalType, LongType, StringType, StructField, StructType
 
 
 # 설정 소스: CLI 인자(필수) — Dataproc Serverless 제출 시 DAG가 gs:// 경로를 전달.
