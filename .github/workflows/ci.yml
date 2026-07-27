@@ -30,7 +30,7 @@ jobs:
           python-version: "3.11"        # 로컬 개발 환경과 동일 버전
 
       - name: 필요한 패키지 설치
-        run: pip install ruff pytest pyyaml   # 이번 잡에 필요한 최소 패키지만
+        run: pip install ruff==0.16.0 pytest==8.3.2 pyyaml==6.0.2   # requirements.txt와 버전 고정 일치(재현성) — 최소 패키지만
 
       - name: Lint (코드 스타일 검사)
         run: ruff check .

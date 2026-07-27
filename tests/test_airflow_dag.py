@@ -25,6 +25,7 @@ def _exec(*args, timeout=900):
     r = subprocess.run(
         ["docker", "exec", SCHEDULER, *args],
         capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout,
+        check=False,
     )
     return r.returncode, r.stdout + r.stderr
 

@@ -22,9 +22,8 @@ import signal
 import sys
 import time
 
-from confluent_kafka import Consumer, Producer, TopicPartition
-
 import config
+from confluent_kafka import Consumer, Producer, TopicPartition
 
 # delivery 콜백이 갱신하는 카운터
 _stats = {"delivered": 0, "failed": 0}

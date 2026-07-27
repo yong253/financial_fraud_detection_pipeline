@@ -17,14 +17,19 @@
 from __future__ import annotations
 
 import os
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
-from airflow import DAG
 from airflow.operators.bash import BashOperator
 from airflow.operators.python import PythonOperator
+from airflow.providers.google.cloud.operators.dataproc import (
+    DataprocCreateBatchOperator,
+)
+from airflow.providers.google.cloud.transfers.local_to_gcs import (
+    LocalFilesystemToGCSOperator,
+)
 from airflow.sensors.python import PythonSensor
-from airflow.providers.google.cloud.operators.dataproc import DataprocCreateBatchOperator
-from airflow.providers.google.cloud.transfers.local_to_gcs import LocalFilesystemToGCSOperator
+
+from airflow import DAG
 
 STEP_EPOCH = "2016-01-01 00:00:00"   # batch_silver 와 동일 기준(step→tx_date)
 
@@ -110,7 +115,8 @@ def _bronze_has_tx_date(ds: str) -> bool:
             FROM b
             """
         )[0]
-    except Exception as e:  # 하이브 파티션 미매칭(빈 버킷) 등 일시적 조회 실패 → 다음 poke 재시도
+    except Exception as e:  # noqa: BLE001 — 하이브 파티션 미매칭(빈 버킷) 등 일시적 조회 실패 전부를
+        # 재시도 대상으로 잡기 위한 의도적 광범위 except(센서 포크 실패시키지 않음)
         print(f"[bronze_sensor] ds={ds} Bronze 조회 일시 실패: {e} → 다음 poke 재시도")
         return False
 
@@ -285,7 +291,8 @@ def _push_metrics(ds: str) -> None:
     # DAG run 성공/실패 — 트리거 날짜(logical date=tx_date)별. Prometheus airflow_* 엔 날짜 라벨이 없어
     # Airflow 메타DB(DagRun)를 ORM으로 조회. 라벨 d_ms(날짜 자정 epoch ms)로 다른 일자별 패널과 통일.
     from collections import defaultdict
-    from datetime import datetime as _dt, timezone as _tz
+    from datetime import datetime as _dt
+    from datetime import timezone as _tz
 
     from airflow.models import DagRun
     from airflow.utils.session import create_session
@@ -324,8 +331,8 @@ with DAG(
     description="Bronze→Silver→Gold 이벤트시간 일별 증분 배치 (Medallion)",
     default_args=default_args,
     schedule="@daily",
-    start_date=datetime(2016, 1, 1),
-    end_date=datetime(2016, 1, 6),   # 5일치 백필용(ds 01-01~01-05) — 전량 검증 시 2016-02-01로 복원
+    start_date=datetime(2016, 1, 1, tzinfo=timezone.utc),
+    end_date=datetime(2016, 1, 6, tzinfo=timezone.utc),   # 5일치 백필용(ds 01-01~01-05) — 전량 검증 시 2016-02-01로 복원
     catchup=True,
     max_active_runs=1,               # 같은 파티션 동시 처리 방지
     tags=["fraud", "medallion", "batch"],

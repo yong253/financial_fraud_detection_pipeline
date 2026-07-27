@@ -54,6 +54,7 @@ def _exec(*args, timeout=300):
     r = subprocess.run(
         ["docker", "exec", SCHEDULER, *args],
         capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout,
+        check=False,
     )
     return r.returncode, r.stdout + r.stderr
 
@@ -61,8 +62,7 @@ def _exec(*args, timeout=300):
 def _iter_panels(dash: dict):
     for p in dash.get("panels", []):
         yield p
-        for sub in p.get("panels", []):
-            yield sub
+        yield from p.get("panels", [])
 
 
 # ── MON1: 설정 파일 파싱 ─────────────────────────────────────────────────────
@@ -111,7 +111,7 @@ def test_mon3_compose_profile_renders():
     r = subprocess.run(
         [*COMPOSE, "--profile", "monitoring", "config", "--services"],
         capture_output=True, text=True, encoding="utf-8", errors="replace",
-        timeout=120, cwd=ROOT,
+        timeout=120, cwd=ROOT, check=False,
     )
     assert r.returncode == 0, f"[MON3] config 실패\n{r.stderr}"
     services = set(r.stdout.split())
@@ -128,6 +128,7 @@ def test_mon4_promtool_check_config():
          "-v", f"{PROM_YML.as_posix()}:/p.yml:ro",
          "prom/prometheus:v2.53.0", "check", "config", "/p.yml"],
         capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=300,
+        check=False,
     )
     assert r.returncode == 0, f"[MON4] promtool 실패\n{r.stdout}{r.stderr}"
     assert "SUCCESS" in (r.stdout + r.stderr)
@@ -171,9 +172,9 @@ def test_mon6_push_metrics_e2e():
     from google.cloud import bigquery
 
     client = bigquery.Client(project=GCP_PROJECT_ID)
-    gold = list(client.query(
+    gold = next(iter(client.query(
         f"SELECT count(*) FROM `{GCP_PROJECT_ID}.{BQ_DATASET_GOLD}.undetected_fraud`"
-    ).result())[0][0]
+    ).result()))[0]
     results = []
     for _ in range(15):
         code, body = _http("http://localhost:9090/api/v1/query?query=fraud_undetected_total")
