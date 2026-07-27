@@ -12,7 +12,10 @@ Medallion **Silver** 레이어 규칙 (Bronze → Silver 변환):
 파일:
 - `batch_silver.py` — Bronze → Silver (Quarantine 포함). Dataproc Serverless 전용(DAG의
   `spark_silver` 태스크가 제출). `--bronze-path`/`--silver-path`는 gs:// 경로 필수(Part2:
-  로컬 datalake 대체재 제거), `--target-tx-date`는 선택.
+  로컬 datalake 대체재 제거), `--step-epoch`도 필수, `--target-tx-date`는 선택.
+  `--step-epoch`(step=1의 절대 시각)는 **Airflow DAG가 단일 출처로 소유**하고 인자로 전달한다 —
+  env 폴백/기본값을 두지 않는다(Dataproc엔 해당 env가 없어 폴백이 항상 발동하고, DAG의 tx_date
+  계산과 조용히 어긋나 "정합성 붕괴"로 위장되기 때문).
 
 멱등: Spark checkpoint + 동적 파티션 덮어쓰기(partitionOverwrite dynamic) + dedup 키.
 금액은 float 드리프트 방지 위해 문자열/decimal 직렬화. (상위 정합성 규칙은 루트 `CLAUDE.md`·`TODO.md`.)

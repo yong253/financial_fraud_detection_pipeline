@@ -8,6 +8,8 @@
     (end_date로 한정 — 안 그러면 현재까지 수천 run 생성됨. PaySim=744 step≈31일.)
   - 실행: BashOperator + `docker compose run --rm` (docker.sock). 잡 컨테이너 마운트는
     절대 호스트경로(HOST_PROJECT_DIR)로 해석되어 docker-out-of-docker 경로 문제 없음.
+  - STEP_EPOCH(step→tx_date 기준시각)는 이 DAG가 단일 출처로 소유하고 spark_silver의
+    `--step-epoch`로 batch_silver 에 전달한다(양쪽 하드코딩 금지).
 
 태스크: bronze_sensor → spark_silver({{ds}}) → dbt_run → dbt_test → reconcile
 정합성: reconcile 가 레이어 간 무손실·무중복을 검증 — undetected_fraud(Gold) ==
@@ -30,8 +32,6 @@ from airflow.providers.google.cloud.transfers.local_to_gcs import (
 from airflow.sensors.python import PythonSensor
 
 from airflow import DAG
-
-STEP_EPOCH = "2016-01-01 00:00:00"   # batch_silver 와 동일 기준(step→tx_date)
 
 
 def _req(name: str) -> str:
@@ -57,6 +57,11 @@ BQ_HOURLY     = f"`{GCP_PROJECT_ID}.{BQ_DATASET_GOLD}.hourly_summary`"
 # E단계: producer --realtime 마지막 날 완결 마커(GCS). Bronze 버킷(JSON 전용) 오염 방지 위해
 # staging 버킷에 둔다.
 FEED_DONE_URI = _req("FEED_DONE_URI")
+
+# step→tx_date 기준시각(step=1의 절대 시각)의 단일 출처. DAG가 소유하고 spark_silver의
+# `--step-epoch`로 batch_silver 에 전달한다 — 양쪽 하드코딩 금지(어긋나면 정합성 붕괴로 위장됨).
+# 리터럴 기본값은 docker-compose.yml 의 `${STEP_EPOCH:-...}` 한 곳에만 둔다.
+STEP_EPOCH = _req("STEP_EPOCH")
 
 # D단계: Dataproc Serverless 제출(spark_silver)용
 GCP_REGION         = os.getenv("GCP_REGION", "asia-northeast3")
@@ -376,6 +381,9 @@ with DAG(
                     # 충돌해 Spark가 "Conflicting directory structures" 로 실패한다(실측 확인).
                     f"--bronze-path=gs://{GCS_BUCKET_BRONZE}/topics/transactions",
                     f"--silver-path=gs://{GCS_BUCKET_SILVER}",
+                    # DAG가 소유한 기준시각을 명시 전달 — Spark가 자기 환경에서 따로 구하면
+                    # (Dataproc엔 STEP_EPOCH env가 없음) DAG와 tx_date 계산이 어긋난다.
+                    f"--step-epoch={STEP_EPOCH}",
                     "--target-tx-date={{ ds }}",
                 ],
             },

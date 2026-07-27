@@ -99,6 +99,28 @@ def test_af9_bronze_completeness_gate():
     assert gate(0, 10, True) is False       # 그날 데이터 자체가 없음 → 미완결
 
 
+# ── AF10: STEP_EPOCH 단일 출처 (env → DAG → Spark 인자) ─────────────────────
+
+def test_af10_step_epoch_passed_to_spark():
+    """step→tx_date 기준시각은 DAG가 소유하고 spark_silver 인자로 전달돼야 한다.
+
+    Spark(batch_silver)가 자기 환경에서 따로 구하면 Dataproc Serverless엔 STEP_EPOCH env가
+    없어 기본값으로 폴백하고, DAG의 tx_date 계산과 조용히 어긋난다(정합성 붕괴로 위장됨).
+    컨테이너 env → DAG 상수 → 렌더된 배치 인자까지 한 번에 검증한다.
+    """
+    snippet = (
+        "import os;"
+        "from airflow.models import DagBag;"
+        "d=DagBag().get_dag('fraud_pipeline');"
+        "a=d.get_task('spark_silver').batch['pyspark_batch']['args'];"
+        "want='--step-epoch=' + os.environ['STEP_EPOCH'];"
+        "print('MATCH' if want in a else 'MISMATCH want=' + want + ' args=' + repr(a))"
+    )
+    code, out = _exec("python", "-c", snippet, timeout=120)
+    assert code == 0, out
+    assert "MATCH" in out, f"[AF10] STEP_EPOCH가 Spark 인자로 전달되지 않음:\n{out}"
+
+
 # ── AF5/AF8 안내 ─────────────────────────────────────────────────────────────
 # AF5(백필): `airflow dags backfill -s 2016-01-01 -e 2016-01-03 fraud_pipeline` 로 다수
 #            logical date 실행 — 데이터 있는 날만 Silver, 빈 날 0행 성공(라이브 검증).
