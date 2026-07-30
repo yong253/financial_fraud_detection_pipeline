@@ -74,11 +74,11 @@ x-airflow-common: &airflow-common
     BQ_DATASET_GOLD: ${BQ_DATASET_GOLD:-fraud_gold}
     # ── E단계: bronze_sensor GCS/BQ 센싱용 ──
     BQ_DATASET_BRONZE: ${BQ_DATASET_BRONZE:-fraud_bronze}
-    # step→tx_date 기준시각. DAG가 읽어 Spark(--step-epoch)로 전달하는 단일 출처 —
-    # 리터럴 기본값은 여기 한 곳에만 둔다(.env에 값이 있으면 그쪽이 우선).
-    # ★ 변경 시 이미 적재된 Silver의 tx_date와 어긋나므로 전량 재처리 필수.
+    # step→tx_date 기준시각. producer가 event_time을 만들 때, DAG가 reconcile 교차검증에서
+    # step 기준 날짜를 계산할 때 **같은 값**을 써야 한다. 리터럴 기본값은 여기 한 곳에만 둔다
+    # (.env에 값이 있으면 그쪽이 우선). 두 곳이 어긋나면 reconcile이 불일치로 잡아낸다.
+    # ★ 변경 시 이미 적재된 Bronze의 date= 파티션과 어긋나므로 전량 재적재 필수.
     STEP_EPOCH: ${STEP_EPOCH:-2016-01-01 00:00:00}
-    FEED_DONE_URI: ${FEED_DONE_URI:?.env에 FEED_DONE_URI를 설정하세요}
     GOOGLE_APPLICATION_CREDENTIALS: /opt/airflow/project/credentials/service_account.json
     # ── D단계: Dataproc 제출(DataprocCreateBatchOperator) + GCS 코드 업로드용 ──
     GCP_REGION: ${GCP_REGION:-asia-northeast3}
@@ -277,7 +277,9 @@ services:
 
   # CSV → Kafka Producer(컨테이너화, ★ 최종 전환 작업). profile 지정으로 `up`엔 안 뜸.
   # 스모크: docker compose --profile producer run --rm producer
-  # 오버라이드: ... run --rm producer python producer.py --realtime --done-marker gs://...
+  # 전량:   ... run --rm producer python producer.py --limit 0 --rate 0
+  # producer는 GCP에 직접 쓰지 않는다 — 완결 신호(EOD 마커)는 Kafka 스트림에 실려
+  # Connect를 거쳐 Bronze에 도달한다(지름길로 보낸 신호는 그 경로의 완료를 증명 못 함).
   producer:
     build:
       context: ${HOST_PROJECT_DIR:-.}/kafka
@@ -297,11 +299,11 @@ services:
       KAFKA_BOOTSTRAP_SERVERS: "kafka1:29092,kafka2:29092,kafka3:29092"
       KAFKA_TOPIC: ${KAFKA_TOPIC:-transactions}
       RAW_CSV_PATH: /app/data/raw/Synthetic_Financial_datasets_log.csv
-      GCP_CREDENTIALS_PATH: /credentials/service_account.json
+      # event_time(=step→절대시각) 계산 기준. airflow와 **같은 값**이어야 한다(위 x-airflow-common 참조).
+      STEP_EPOCH: ${STEP_EPOCH:-2016-01-01 00:00:00}
     volumes:
       - ${HOST_PROJECT_DIR:-.}/kafka:/app/kafka
       - ${HOST_PROJECT_DIR:-.}/data:/app/data
-      - ${HOST_PROJECT_DIR:-.}/credentials:/credentials:ro
     networks:
       - fraud-net
     command: ["python", "producer.py", "--limit", "1000"]

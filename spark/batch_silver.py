@@ -1,13 +1,20 @@
 """Bronze → Silver Spark 배치 (Bronze JSON → Silver parquet).
 
 Medallion Silver 규칙:
-  - Bronze는 Kafka Connect GCS Sink가 쓴 평탄 JSON(payload 필드 top-level) + kafka_timestamp
-    (Connect SMT가 넣는 epoch millis) — 타입 변환 + 품질 검증
+  - Bronze는 Kafka Connect GCS Sink가 쓴 평탄 JSON(payload 필드 top-level) + 메타 3개
+    (kafka_timestamp / event_time / record_type) — 타입 변환 + 품질 검증
+  - Bronze는 **이벤트일**로 파티셔닝(date=YYYY-MM-DD)되어 있고, DAG가 처리 대상 하루치
+    폴더만 --bronze-path 로 넘긴다 → 매 배치 전량 스캔 없음
+  - EOD 마커(record_type='eod_marker')는 거래가 아니라 완결 신호다. 품질 검사 **앞에서**
+    걸러낸다(뒤에 두면 parse_error 로 Quarantine에 쌓이고 삭제도 못 한다)
   - Quarantine 패턴: 불량 데이터 → silver/quarantine/ (삭제 금지)
-  - 건수 정합성: Bronze == valid_raw + quarantine (불일치 시 중단)
   - is_suspicious 플래그: isFraud=1 AND isFlaggedFraud=0 (원본 라벨 파생: 기존 룰 미탐지 사기 집계)
   - row_id: SHA-256(nameOrig|step|type|amount|nameDest) — dedup 키
   - partitionOverwriteMode=dynamic → 멱등 재처리
+
+무손실 검증은 여기가 아니라 Airflow `reconcile` 이 한다 — Bronze(품질통과·유니크) ↔ Silver 를
+일자별로 대조한다. 예전 이 파일에 있던 "bronze == valid + quarantine" 검사는 reject_reason 의
+isNull/isNotNull 이 상보적이라 **항상 참**이어서 아무것도 잡지 못했고, 전량 스캔만 2회 썼다.
 
 실행: Dataproc Serverless(Airflow DAG의 `spark_silver` 태스크)로 제출.
   `--bronze-path`/`--silver-path`는 gs:// 경로 필수(Part2: 로컬 datalake 대체재 제거).
@@ -25,11 +32,11 @@ from pyspark.sql.types import DecimalType, LongType, StringType, StructField, St
 # parse_known_args → Spark 런타임이 붙이는 잉여 인자는 무시.
 def _parse_config():
     p = argparse.ArgumentParser(description="Bronze→Silver Spark 배치")
-    p.add_argument("--bronze-path",    required=True)  # gs://.../topics/transactions
+    # --bronze-path 는 이제 **하루치 파티션**을 가리킨다(gs://.../transactions/date=YYYY-MM-DD).
+    # Bronze가 이벤트일로 파티셔닝되므로 DAG가 처리 대상 날짜 폴더만 지정한다 →
+    # 매 배치 전량(6.36M행) 스캔이 사라진다.
+    p.add_argument("--bronze-path",    required=True)
     p.add_argument("--silver-path",    required=True)  # gs://...-silver
-    # step-epoch는 env 폴백을 두지 않는다 — Dataproc Serverless엔 STEP_EPOCH env가 없어
-    # 폴백이 항상 발동했고, DAG의 기준시각과 조용히 어긋날 수 있었다(단일 출처 = DAG).
-    p.add_argument("--step-epoch",     required=True)  # DAG가 항상 전달(step→tx_date 단일 출처)
     p.add_argument("--target-tx-date", default=os.getenv("TARGET_TX_DATE"))
     args, _ = p.parse_known_args()
     return args
@@ -39,7 +46,6 @@ _cfg = _parse_config()
 BRONZE_PATH      = _cfg.bronze_path
 SILVER_PATH      = _cfg.silver_path
 SILVER_QUAR_PATH = SILVER_PATH.rstrip("/") + "/quarantine"
-STEP_EPOCH       = _cfg.step_epoch
 # Model 2(이벤트시간 일별 증분): 지정 시 해당 tx_date 1일치 valid 행만 Silver로 기록.
 # 미지정(None)이면 전체 처리 — 기존 동작 유지(하위호환). Airflow가 {{ ds }}를 주입.
 TARGET_TX_DATE   = _cfg.target_tx_date  # "YYYY-MM-DD" 또는 None
@@ -62,12 +68,22 @@ PAYLOAD_SCHEMA = StructType([
     StructField("isFlaggedFraud", StringType()),
 ])
 
-# E단계: Bronze 전체 스키마 = payload 필드(top-level) + kafka_timestamp.
-# kafka_timestamp는 Kafka Connect SMT(InsertField$Value)가 넣는 Kafka record timestamp
-# (epoch millis, LongType) — 실측 확인됨(gsutil cat으로 숫자 필드 확인).
+# E단계: Bronze 전체 스키마 = payload 필드(top-level) + 메타 3개.
+#   kafka_timestamp — Kafka Connect SMT(InsertField$Value)가 넣는 Kafka record timestamp
+#                     (epoch millis, LongType). 적재 시각.
+#   event_time      — producer가 step에서 계산한 이벤트 시각(epoch millis). Connect의
+#                     파티셔닝 키이자 tx_timestamp 의 원천.
+#   record_type     — NULL이면 거래, 'eod_marker'면 그날 완결 신호. 마커는 거래와 같은
+#                     writer를 타야 순서 보장이 성립하므로 Bronze에 섞여 들어온다.
 BRONZE_SCHEMA = StructType(
-    PAYLOAD_SCHEMA.fields + [StructField("kafka_timestamp", LongType())]
+    PAYLOAD_SCHEMA.fields + [
+        StructField("kafka_timestamp", LongType()),
+        StructField("event_time",      LongType()),
+        StructField("record_type",     StringType()),
+    ]
 )
+
+MARKER_RECORD_TYPE = "eod_marker"
 
 
 def _reject_reason():
@@ -85,6 +101,10 @@ def _reject_reason():
             F.col("nameDest").isNull(),
             "parse_error",
         )
+         # event_time 은 tx_timestamp/tx_date 의 유일한 원천이다. NULL이면 tx_date가 NULL이 되어
+         # __HIVE_DEFAULT_PARTITION__ 으로 조용히 새므로, 격리해서 눈에 보이게 만든다.
+         # (producer 없이 적재된 옛 데이터나 event_time 주입 누락을 잡는다.)
+         .when(F.col("event_time").isNull(), "missing_event_time")
          .when(
              F.col("amount").cast("double").isNull() |
              (F.col("amount").cast("double") <= 0),
@@ -115,32 +135,33 @@ def main() -> None:
     spark.sparkContext.setLogLevel("WARN")
 
     # ── Step 1: Bronze 읽기 (평탄 JSON, 명시 스키마) ────────────────────────
+    # BRONZE_PATH는 하루치 파티션(date=YYYY-MM-DD)이라 전량 스캔이 아니다.
     bronze_df    = spark.read.schema(BRONZE_SCHEMA).json(BRONZE_PATH)
-    bronze_count = bronze_df.count()
-    print(f"[silver] bronze 읽기: {bronze_count}행")
 
-    # ── Step 2: valid / quarantine 분리 (payload 필드가 이미 top-level) ─────
-    labeled    = bronze_df.withColumn("reject_reason", _reject_reason())
+    # ── Step 2: EOD 마커 분리 — 반드시 품질 검사 **앞**에서 ─────────────────
+    # 마커는 거래가 아니라 "그날 데이터가 다 왔다"는 신호다. 품질 검사에 넘기면 필수 필드가
+    # 없어 parse_error 로 Quarantine에 쌓이고, 프로젝트 규칙상 삭제할 수도 없다.
+    tx_df        = bronze_df.filter(F.col("record_type").isNull())
+    marker_count = bronze_df.filter(F.col("record_type") == MARKER_RECORD_TYPE).count()
+    bronze_count = tx_df.count()
+    print(f"[silver] bronze 읽기: 거래 {bronze_count}행 (EOD 마커 {marker_count}건 제외)")
+
+    # ── Step 3: valid / quarantine 분리 (payload 필드가 이미 top-level) ─────
+    # (이전의 "bronze == valid + quarantine" 검사는 제거했다. reject_reason 의 isNull/
+    #  isNotNull 이 상보적이라 **수학적으로 항상 참**이었고 — 발동할 수 있는 경로가 없다 —
+    #  대신 전량 스캔 2회를 쓰고 있었다. 실제 무손실 검증은 Airflow `reconcile` 태스크가
+    #  Bronze(품질통과·유니크) ↔ Silver 를 일자별로 대조해 수행한다.)
+    labeled    = tx_df.withColumn("reject_reason", _reject_reason())
     valid_raw  = labeled.filter(F.col("reject_reason").isNull())
     quarantine = labeled.filter(F.col("reject_reason").isNotNull())
 
-    # ── Step 3: 건수 정합성 검증 (저장 전) ──────────────────────────────
-    valid_raw_count = valid_raw.count()
-    quar_count      = quarantine.count()
-    if valid_raw_count + quar_count != bronze_count:
-        raise RuntimeError(
-            f"[silver] 건수 불일치 — "
-            f"bronze={bronze_count}, valid={valid_raw_count}, "
-            f"quarantine={quar_count}, 합계={valid_raw_count + quar_count}"
-        )
-    print(f"[silver] 정합성 OK — valid={valid_raw_count}, quarantine={quar_count}")
-
     # ── Step 4: Silver 컬럼 변환 ─────────────────────────────────────────
-    # tx_timestamp: 2016-01-01 00:00:00 + (step-1) hours
-    epoch_unix = F.unix_timestamp(F.lit(STEP_EPOCH))
-    tx_ts = F.to_timestamp(
-        epoch_unix + (F.col("step").cast("long") - 1) * 3600
-    )
+    # tx_timestamp: producer가 step에서 계산해 실어 보낸 event_time(epoch millis).
+    #   예전엔 여기서 STEP_EPOCH + (step-1)h 를 다시 계산했지만, 이제 기준시각을 아는 곳은
+    #   producer 하나다. Spark가 따로 계산하면 Connect의 date= 파티션(=event_time 기반)과
+    #   Silver tx_date가 어긋날 수 있다 — 같은 값에서 파생시켜 그 여지를 없앤다.
+    #   (step ↔ event_time 의 일치 자체는 Airflow reconcile 이 교차검증한다.)
+    tx_ts = F.timestamp_millis(F.col("event_time"))
     # kafka_timestamp: epoch millis(Long) → Spark timestamp
     kafka_ts = F.timestamp_millis(F.col("kafka_timestamp"))
 
@@ -179,8 +200,8 @@ def main() -> None:
     )
 
     # ── Step 4b: Model 2 — 지정된 tx_date 1일치만 선택 (멱등 일별 증분) ──
-    # 정합성 검증(Step 3)은 전체 Bronze 기준으로 이미 수행됨(파싱 무손실 확인).
-    # 여기서는 "기록 대상"만 해당 날짜로 좁힌다 → dynamic overwrite가 그 파티션만 덮어씀.
+    # BRONZE_PATH 가 이미 하루치 파티션이라 대부분 걸릴 게 없지만, event_time 과 폴더가
+    # 어긋난 행(잘못 적재)을 걸러내는 안전망으로 남긴다 → dynamic overwrite가 그 파티션만 덮어씀.
     if TARGET_TX_DATE:
         silver_df = silver_df.filter(
             F.col("tx_date") == F.to_date(F.lit(TARGET_TX_DATE))
@@ -216,8 +237,10 @@ def main() -> None:
         .parquet(SILVER_QUAR_PATH)
 
     # ── Step 8: 완료 출력 ────────────────────────────────────────────────
+    valid_raw_count  = valid_raw.count()
+    quar_count       = quarantine.count()
     suspicious_count = silver_df.filter("is_suspicious").count()
-    print(f"[silver] bronze={bronze_count}")
+    print(f"[silver] bronze_tx={bronze_count}  eod_markers={marker_count}")
     print(f"[silver] valid_raw={valid_raw_count}  quarantine={quar_count}  dedup_removed={dedup_removed}")
     print(f"[silver] silver_written={silver_count}  is_suspicious={suspicious_count}")
     print(f"[silver] 완료 → {SILVER_PATH}")
