@@ -111,6 +111,17 @@ def _bronze_has_tx_date(ds: str) -> bool:
 
     파티션 수는 하드코딩하지 않는다 — 마커 payload의 total_partitions 를 그대로 쓴다.
     Kafka Connect가 동시에 쓰는 중 조회 실패(하이브 파티션 미매칭 등)는 False 반환 → 재시도.
+
+    **`date` 술어는 하이브 파티션 프루닝용이다.** 없으면 마커 3행을 확인하려고 Bronze 전량을
+    읽는다 — 실측으로 poke 1회가 1.91GB를 스캔했고, 31일 백필에서 BigQuery 슬롯의 95%가
+    Bronze를 읽는 쿼리에 쓰였다. `record_type`·`tx_date` 는 JSON 페이로드 필드라 프루닝이
+    걸리지 않는다(파티션 컬럼은 폴더명에서 온 `date` 뿐).
+
+    `tx_date` 조건은 프루닝을 넣은 뒤에도 남긴다 — `date` 는 폴더(producer의 `event_time`
+    유래)이고 `tx_date` 는 마커가 스스로 선언한 날짜라 **출처가 다르다**. 둘 다 요구하면
+    서로를 교차검증하게 되고, `event_time` 주입이 어긋나면 완결 판정이 서지 않아 드러난다.
+    (실측 근거: 마커 93건 전부 `date == tx_date`, 프루닝 전후 판정 동일(3/3),
+     스캔 1.91GB → 81KB~172MB(그날 거래량에 비례).)
     """
     try:
         rows = _bq_query(
@@ -118,7 +129,8 @@ def _bronze_has_tx_date(ds: str) -> bool:
             SELECT COUNT(DISTINCT kafka_partition) AS seen,
                    MAX(total_partitions)           AS expected
             FROM {BQ_BRONZE}
-            WHERE record_type = 'eod_marker' AND tx_date = '{ds}'
+            WHERE date = DATE '{ds}'
+              AND record_type = 'eod_marker' AND tx_date = '{ds}'
             """
         )
     except Exception as e:  # noqa: BLE001 — 하이브 파티션 미매칭(빈 버킷) 등 일시적 조회 실패 전부를
