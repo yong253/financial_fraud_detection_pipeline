@@ -222,7 +222,23 @@ def main() -> None:
 
     # ── Step 7: Quarantine 저장 (dynamic overwrite, 멱등) ────────────────
     # 원본 payload 필드를 JSON으로 재구성해 value 컬럼으로 보존(평탄 스키마라 원본
-    # value 문자열 컬럼이 더 이상 없음) + reject_reason + ingest_date 파티션.
+    # value 문자열 컬럼이 더 이상 없음) + reject_reason + tx_date 파티션.
+    #
+    # **파티션 키는 이 run의 처리 단위(tx_date)와 반드시 일치해야 한다.**
+    # dynamic overwrite는 "이번에 쓰는 데이터에 들어있는 파티션만 통째로 교체"이므로,
+    # 키가 run마다 달라야 서로를 덮지 않는다. Silver(Step 6)가 tx_date로 나눠 멀쩡했던 것과
+    # 달리 여기는 예전에 ingest_date(=kafka_timestamp의 날짜)로 나눴는데, CSV를 한 번에
+    # 발행해 31 run이 전부 같은 ingest_date를 가졌다 → 매 run이 같은 파티션을 갈아끼워
+    # **마지막 run 것만 남았다(격리 16건 중 3건 생존).** reconcile은 품질탈락 행을
+    # 등식에 넣지 않아 31/31 통과하면서도 이 유실을 잡지 못했다.
+    #
+    # 값을 event_time에서 파생시키지 않고 **인자 리터럴**을 쓰는 이유: 격리행은 애초에
+    # 불량이라 event_time이 깨져 있으면(=missing_event_time 규칙) 파생 tx_date가 NULL이 되고,
+    # NULL은 전부 __HIVE_DEFAULT_PARTITION__ 하나로 몰려 **같은 충돌이 그대로 재현된다.**
+    # 이 run이 처리하는 날짜는 --target-tx-date 로 이미 확실히 알고 있다.
+    # (kafka_timestamp는 컬럼으로 그대로 남으므로 적재 시각 정보는 잃지 않는다.)
+    quar_part = F.lit(TARGET_TX_DATE).cast("date") if TARGET_TX_DATE else F.to_date(tx_ts)
+
     payload_cols = [f.name for f in PAYLOAD_SCHEMA.fields]
     quarantine \
         .select(
@@ -230,10 +246,10 @@ def main() -> None:
             kafka_ts.alias("kafka_timestamp"),
             "reject_reason",
         ) \
-        .withColumn("ingest_date", F.to_date(F.col("kafka_timestamp"))) \
+        .withColumn("tx_date", quar_part) \
         .write \
         .mode("overwrite") \
-        .partitionBy("ingest_date") \
+        .partitionBy("tx_date") \
         .parquet(SILVER_QUAR_PATH)
 
     # ── Step 8: 완료 출력 ────────────────────────────────────────────────
