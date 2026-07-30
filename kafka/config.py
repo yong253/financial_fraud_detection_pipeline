@@ -18,10 +18,14 @@ TOPIC = os.getenv("KAFKA_TOPIC", "transactions")
 RAW_CSV_PATH = os.getenv(
     "RAW_CSV_PATH", "./data/raw/Synthetic_Financial_datasets_log.csv"
 )
-# E단계: --done-marker gs:// 업로드용 GCP 서비스계정 키 경로
-GCP_CREDENTIALS_PATH = os.getenv(
-    "GCP_CREDENTIALS_PATH", "./credentials/service_account.json"
-)
+# (GCP_CREDENTIALS_PATH 제거) producer는 더 이상 GCS에 직접 쓰지 않는다 — 완결 신호가
+# `--done-marker`(GCS 직접 쓰기)에서 Kafka 스트림 내 EOD 마커로 바뀌었다.
+
+# step→이벤트시각 기준시각(step=1의 절대 시각). producer가 `event_time` 필드를 만들 때 쓴다.
+# 리터럴 기본값은 docker-compose.yml 한 곳에만 둔다(여기 폴백은 호스트 직접 실행용).
+# Airflow DAG도 같은 .env 값을 읽어 reconcile 교차검증에 쓴다 — 두 곳이 어긋나면
+# "event_time 기준 날짜"와 "step 기준 날짜"가 달라져 reconcile이 불일치로 잡아낸다.
+STEP_EPOCH = os.getenv("STEP_EPOCH", "2016-01-01 00:00:00")
 
 
 def producer_config() -> dict:

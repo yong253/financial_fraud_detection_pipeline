@@ -1,4 +1,6 @@
 {
+  "_comment": "date= 폴더는 이벤트일(거래일)이다. producer가 step에서 계산해 넣는 event_time을 RecordField로 읽는다. Record(인제스트 시각)로 두면 전량이 한 폴더에 들어가 Spark가 프루닝을 못 해 매 배치 6.36M행을 스캔한다. step 자체는 키로 못 쓴다 — FieldPartitioner는 743개 폴더를 만들고 RecordField는 '1'을 epoch 1ms(1970-01-01)로 읽는다. EOD 마커도 같은 폴더/writer에 들어가야 한다(경로가 갈리면 flush 순서 관계가 사라져 완결 판정이 무너짐).",
+
   "connector.class": "io.confluent.connect.gcs.GcsSinkConnector",
   "tasks.max": "3",
   "topics": "transactions",
@@ -21,7 +23,9 @@
   "path.format": "'date'=yyyy-MM-dd",
   "locale": "en-US",
   "timezone": "UTC",
-  "timestamp.extractor": "Record",
+
+  "timestamp.extractor": "RecordField",
+  "timestamp.field": "event_time",
 
   "flush.size": "1000",
   "rotate.schedule.interval.ms": "60000",

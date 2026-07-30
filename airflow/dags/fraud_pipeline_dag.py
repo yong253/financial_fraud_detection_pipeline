@@ -5,7 +5,7 @@
     → DAG는 Bronze 스토리지(GCS/BQ)에서 출발하므로 적재 방식 교체와 무관(불변).
   - 처리 모델 = Model 2(이벤트시간 일별 증분): run 1개 = tx_date 하루치({{ ds }}).
     start_date=2016-01-01 + catchup=True 로 데이터셋 30일 구간을 하루씩 백필.
-    (end_date로 한정 — 안 그러면 현재까지 수천 run 생성됨. PaySim=744 step≈31일.)
+    (end_date로 한정 — 안 그러면 현재까지 수천 run 생성됨. PaySim=step 1~743 → 정확히 31일.)
   - 실행: BashOperator + `docker compose run --rm` (docker.sock). 잡 컨테이너 마운트는
     절대 호스트경로(HOST_PROJECT_DIR)로 해석되어 docker-out-of-docker 경로 문제 없음.
   - STEP_EPOCH(step→tx_date 기준시각)는 이 DAG가 단일 출처로 소유하고 spark_silver의
@@ -21,6 +21,7 @@ from __future__ import annotations
 import os
 from datetime import datetime, timedelta, timezone
 
+from airflow.exceptions import AirflowSkipException
 from airflow.operators.bash import BashOperator
 from airflow.operators.python import PythonOperator
 from airflow.providers.google.cloud.operators.dataproc import (
@@ -54,13 +55,12 @@ BQ_UNDETECTED = f"`{GCP_PROJECT_ID}.{BQ_DATASET_GOLD}.undetected_fraud`"
 BQ_ACCOUNT    = f"`{GCP_PROJECT_ID}.{BQ_DATASET_GOLD}.account_risk`"
 BQ_HOURLY     = f"`{GCP_PROJECT_ID}.{BQ_DATASET_GOLD}.hourly_summary`"
 
-# E단계: producer --realtime 마지막 날 완결 마커(GCS). Bronze 버킷(JSON 전용) 오염 방지 위해
-# staging 버킷에 둔다.
-FEED_DONE_URI = _req("FEED_DONE_URI")
-
-# step→tx_date 기준시각(step=1의 절대 시각)의 단일 출처. DAG가 소유하고 spark_silver의
-# `--step-epoch`로 batch_silver 에 전달한다 — 양쪽 하드코딩 금지(어긋나면 정합성 붕괴로 위장됨).
-# 리터럴 기본값은 docker-compose.yml 의 `${STEP_EPOCH:-...}` 한 곳에만 둔다.
+# step=1 의 절대 시각. **producer가 event_time을 만들 때 쓰는 값과 같아야 한다**
+# (리터럴 기본값은 docker-compose.yml 의 `${STEP_EPOCH:-...}` 한 곳).
+# 여기서는 reconcile 의 **교차검증**에만 쓴다 — Bronze 행수를 셀 때 date= 파티션(=producer의
+# event_time에서 나옴) 대신 step 에서 날짜를 계산해서 센다. 두 값이 어긋나면 그 자체로
+# reconcile 이 불일치를 잡아낸다(같은 출처끼리 비교하면 교차검증이 성립하지 않는다).
+# batch_silver 는 더 이상 이 값을 받지 않는다 — tx_timestamp 를 event_time 에서 직접 만든다.
 STEP_EPOCH = _req("STEP_EPOCH")
 
 # D단계: Dataproc Serverless 제출(spark_silver)용
@@ -84,50 +84,52 @@ default_args = {
     "owner": "fraud-pipeline",
     "retries": 2,
     "retry_delay": timedelta(minutes=5),
-    "execution_timeout": timedelta(minutes=30),
+    # 전량(6.36M) 기준 상향: batch_silver 가 매 run Bronze 전량을 스캔하므로(파티션 키가
+    # 이벤트시간이 아니라 인제스트 시각이라 프루닝 불가) 30분은 마진이 부족하다 — 31 run
+    # 백필 도중 타임아웃으로 깨지는 것을 막는다. (bronze_sensor는 아래에서 2h로 별도 지정)
+    "execution_timeout": timedelta(minutes=60),
 }
 
 
-def _gcs_object_exists(gs_uri: str) -> bool:
-    """gs://bucket/path 오브젝트 존재 확인 (FEED_DONE 마커용)."""
-    from google.cloud import storage
-
-    bucket_name, _, blob_name = gs_uri[len("gs://"):].partition("/")
-    return storage.Client(project=GCP_PROJECT_ID).bucket(bucket_name).blob(blob_name).exists()
-
-
 def _bronze_has_tx_date(ds: str) -> bool:
-    """day-by-day 실시간 흐름: 해당 tx_date 데이터가 Bronze에 '완결 도착'했는지 센싱.
+    """해당 tx_date 데이터가 Bronze에 '완결 도착'했는지 센싱 — EOD 마커 기준.
 
-    E단계: Bronze는 Kafka Connect GCS Sink가 쓰는 BigQuery 외부테이블(fraud_bronze)로 조회.
-    step을 파싱해 이벤트시간 tx_date 계산. 완결 판정(워터마크)은 기존과 동일:
-    그날 데이터 존재 AND (다음날 데이터도 도착 OR 피드 완료 마커).
-      - 다음날이 Bronze에 보이면 = Kafka 오프셋 순서상 그날은 이미 전부 도착(완결).
-      - 마지막날은 다음날이 없으므로 producer가 남긴 FEED_DONE_URI 마커로 완결 판정.
+    **판정: 그날 EOD 마커 수 == 토픽 파티션 수.**
+
+    producer가 하루치를 다 보낸 뒤 모든 파티션에 마커를 하나씩 끼워넣는다. Connect는 오프셋
+    순서로 파일을 쓰고 **GCS 업로드 후에** 오프셋을 커밋하므로, 파티션 P의 마커가 Bronze에
+    보이면 P의 그날 데이터는 전부 GCS에 있다(파티션 내 순서 보장). 모든 파티션에서 참이면
+    그날 완결.
+
+    이전 판정 `day_cnt > 0 AND (after_cnt > 0 OR feed_done)` 은 **틀린 전제**에 기댔다:
+      - "다음날이 보이면 어제는 완결"은 파티션이 1개일 때만 참이다. Connect가 tasks.max=3 으로
+        파티션마다 독립 flush 하므로 파티션 1이 4일차를 쓰는 동안 파티션 0은 3일차 중간일 수
+        있다(실측: run 1이 Bronze 약 72% 상태에서 통과).
+      - FEED_DONE 마커는 producer가 GCS에 **직접** 썼다 — Kafka와 Connect를 건너뛴 신호라
+        "Kafka에 다 넣었다"만 증명할 뿐 Bronze 도착과 무관했다.
+    완결 신호는 데이터와 같은 경로로 흘러야 그 경로의 완료를 증명한다.
+
+    파티션 수는 하드코딩하지 않는다 — 마커 payload의 total_partitions 를 그대로 쓴다.
     Kafka Connect가 동시에 쓰는 중 조회 실패(하이브 파티션 미매칭 등)는 False 반환 → 재시도.
     """
     try:
-        day_cnt, after_cnt = _bq_query(
+        rows = _bq_query(
             f"""
-            WITH b AS (
-              SELECT DATE(TIMESTAMP_ADD(TIMESTAMP '{STEP_EPOCH}',
-                     INTERVAL (CAST(step AS INT64) - 1) HOUR)) AS tx_date
-              FROM {BQ_BRONZE}
-            )
-            SELECT
-              COALESCE(SUM(CASE WHEN tx_date = DATE '{ds}' THEN 1 ELSE 0 END), 0),
-              COALESCE(SUM(CASE WHEN tx_date > DATE '{ds}' THEN 1 ELSE 0 END), 0)
-            FROM b
+            SELECT COUNT(DISTINCT kafka_partition) AS seen,
+                   MAX(total_partitions)           AS expected
+            FROM {BQ_BRONZE}
+            WHERE record_type = 'eod_marker' AND tx_date = '{ds}'
             """
-        )[0]
+        )
     except Exception as e:  # noqa: BLE001 — 하이브 파티션 미매칭(빈 버킷) 등 일시적 조회 실패 전부를
         # 재시도 대상으로 잡기 위한 의도적 광범위 except(센서 포크 실패시키지 않음)
         print(f"[bronze_sensor] ds={ds} Bronze 조회 일시 실패: {e} → 다음 poke 재시도")
         return False
 
-    done = _gcs_object_exists(FEED_DONE_URI)
-    ok = day_cnt > 0 and (after_cnt > 0 or done)
-    print(f"[bronze_sensor] ds={ds} day_cnt={day_cnt} after_cnt={after_cnt} feed_done={done} → {ok}")
+    seen, expected = (rows[0] if rows else (0, None))
+    seen = int(seen or 0)
+    ok = expected is not None and seen == int(expected)
+    print(f"[bronze_sensor] ds={ds} eod_markers={seen}/{expected} → {ok}")
     return ok
 
 
@@ -139,20 +141,105 @@ def _bq_query(sql: str):
     return [tuple(row.values()) for row in client.query(sql).result()]
 
 
-def _reconcile() -> None:
-    """레이어 간 무손실·무중복 정합성 검증(누적 불변식): Gold undetected_fraud 행수 ==
-    Silver is_suspicious 행수. 다르면 Silver→Gold 이동 중 행이 새거나 겹친 것이므로 실패시킨다."""
-    gold = _bq_query(f"SELECT count(*) FROM {BQ_UNDETECTED}")[0][0]
-    silver = _bq_query(
-        f"SELECT count(*) FROM {BQ_SILVER} WHERE is_suspicious"
-    )[0][0]
+def _bronze_valid_by_date(max_ds: str | None = None) -> dict:
+    """Bronze의 "품질통과 + row_id 유니크" 행수를 이벤트일(tx_date)별로 집계 → {d_ms: n}.
 
-    print(f"[reconcile] undetected_fraud={gold}  silver_is_suspicious={silver}")
-    if gold != silver:
+    batch_silver 의 `_reject_reason`/`row_id` 정의를 SQL로 미러링한 **독립 교차검증**이다
+    — Spark 코드와 다른 경로로 같은 답을 구해 대조하므로, 한쪽 버그가 다른 쪽에 가려지지
+    않는다. (원천: spark/batch_silver.py. 그쪽 품질조건/row_id 를 바꾸면 여기도 함께 고칠 것.)
+
+    **날짜를 `date=` 파티션이 아니라 `step` 에서 계산하는 것이 핵심이다.** `date=` 는
+    producer의 `event_time` 에서 나오고 Silver `tx_date` 도 같은 값에서 나오므로, 그대로
+    비교하면 같은 출처끼리 대조하는 셈이라 교차검증이 성립하지 않는다. step 기준으로 세면
+    `event_time` 주입이 잘못된 경우까지 불일치로 드러난다.
+    `date` 는 **프루닝에만** 쓴다(`max_ds` 지정 시).
+
+    EOD 마커는 `record_type IS NOT NULL` 로 명시 제외한다 — 품질 조건에도 어차피 걸리지만,
+    "거래만 센다"는 의도를 코드에 남긴다.
+
+    `_reconcile`(검증)과 `_push_metrics`(관측)가 공유한다 — SQL을 복사하면 row_id 정의가
+    두 벌로 갈라져 조용히 어긋난다.
+    """
+    prune = f"AND date <= DATE '{max_ds}'" if max_ds else ""
+    return dict(_bq_query(
+        f"""
+        SELECT UNIX_MILLIS(TIMESTAMP(DATE(TIMESTAMP_ADD(TIMESTAMP '{STEP_EPOCH}',
+                 INTERVAL (CAST(step AS INT64) - 1) HOUR)))) AS d_ms,
+               COUNT(DISTINCT TO_HEX(SHA256(CONCAT(nameOrig,'|',step,'|',type,'|',amount,'|',nameDest)))) AS n
+        FROM {BQ_BRONZE}
+        WHERE record_type IS NULL                        -- EOD 마커 제외(거래만)
+          {prune}
+          AND step IS NOT NULL AND amount IS NOT NULL AND nameOrig IS NOT NULL
+          AND type IS NOT NULL AND nameDest IS NOT NULL
+          AND SAFE_CAST(amount AS FLOAT64) IS NOT NULL AND SAFE_CAST(amount AS FLOAT64) > 0
+          AND SAFE_CAST(step AS INT64) BETWEEN 1 AND 743
+          AND type IN ('PAYMENT','TRANSFER','CASH_OUT','CASH_IN','DEBIT')
+          AND isFraud IN ('0','1') AND isFlaggedFraud IN ('0','1')
+          AND NOT COALESCE(SAFE_CAST(oldbalanceOrg AS FLOAT64) < 0, FALSE)
+          AND NOT COALESCE(SAFE_CAST(newbalanceOrig AS FLOAT64) < 0, FALSE)
+        GROUP BY d_ms
+        """
+    ))
+
+
+def _reconcile(ds: str) -> None:
+    """레이어 간 무손실·무중복 검증: Bronze(품질통과·유니크) == Silver, 이벤트일(tx_date)별.
+
+    **왜 Bronze↔Silver인가** — 행이 실제로 샐 수 있는 경계가 여기다: 상시 적재로 움직이는
+    Bronze를 읽고, tx_date로 거르고, dedup으로 지우고, quarantine으로 분기한다.
+
+    반면 Silver→Gold는 BigQuery 내부 CTAS라 행이 새는 구간이 아니다. 게다가 이전 등식
+    (`count(undetected_fraud) == count(silver WHERE is_suspicious)`)은 **항상 참이었다** —
+    undetected_fraud 가 바로 그 Silver를 그 술어로 걸러 만든 테이블이라(dbt gold 모델 →
+    stg_silver_transactions → silver), 하루가 통째로 유실돼도 양쪽이 똑같이 줄어 통과했다.
+    검증처럼 보였을 뿐 아무것도 잡지 못했으므로 제거했다.
+
+    **검사 범위 = tx_date <= ds.** ds 하루만 보면 이전 일자가 나중에 깨지는 경우(dynamic
+    overwrite가 다른 파티션을 덮는 등)를 놓치고, 전 일자를 보면 백필 도중 아직 처리하지
+    않은 미래 일자가 Bronze에만 있어 유실로 오판된다(실측으로 확인). ds 이하 = "지금까지
+    처리했어야 할 전부"가 정확한 경계다.
+    """
+    ds_ms = int(datetime.strptime(ds, "%Y-%m-%d").replace(tzinfo=timezone.utc).timestamp() * 1000)
+
+    # max_ds 로 `date=` 파티션 프루닝(스캔량 감소). 건수 자체는 step 기준으로 세므로
+    # event_time↔step 불일치도 그대로 드러난다.
+    bronze = {k: v for k, v in _bronze_valid_by_date(max_ds=ds).items() if k <= ds_ms}
+    silver = {
+        k: v for k, v in _bq_query(
+            f"SELECT UNIX_MILLIS(TIMESTAMP(tx_date)), count(*) FROM {BQ_SILVER} GROUP BY 1"
+        ) if k <= ds_ms
+    }
+
+    # 빈 결과로 "검사할 게 없어 통과"하는 것이 최악이다(이전 등식이 그랬다) → 명시적으로 막는다.
+    if not bronze:
         raise ValueError(
-            f"정합성 불일치: undetected_fraud({gold}) != silver is_suspicious({silver})"
+            f"정합성 검증 불가 — ds={ds} 이하 Bronze 집계가 비어 있다"
+            " (적재 실패 또는 외부테이블 조회 오류)"
         )
-    print("[reconcile] OK — 레이어 간 정합성(무손실·무중복) 통과")
+
+    # 한쪽에만 존재하는 일자야말로 잡아야 할 유실이므로 합집합으로 순회한다(결측=0).
+    mismatches = []
+    for d_ms in sorted(set(bronze) | set(silver)):
+        b, s = int(bronze.get(d_ms, 0)), int(silver.get(d_ms, 0))
+        if b != s:
+            day = datetime.fromtimestamp(d_ms / 1000, tz=timezone.utc).date()
+            mismatches.append((day, b, s))
+
+    if mismatches:
+        detail = "\n".join(
+            f"  {day}  bronze={b:,}  silver={s:,}  diff={b - s:+,}"
+            for day, b, s in mismatches
+        )
+        raise ValueError(
+            f"정합성 불일치 {len(mismatches)}일 "
+            f"(Bronze 품질통과·유니크 != Silver 행수, tx_date <= {ds}):\n{detail}"
+        )
+
+    total = sum(int(v) for v in bronze.values())
+    print(
+        f"[reconcile] OK — Bronze→Silver 무손실·무중복 통과 | "
+        f"tx_date <= {ds}, 검사 일자 {len(bronze)}일, 총 {total:,}행"
+    )
 
 
 def _push_metrics(ds: str) -> None:
@@ -178,26 +265,10 @@ def _push_metrics(ds: str) -> None:
     gold_by_ms = dict(_bq_query(
         f"SELECT UNIX_MILLIS(TIMESTAMP(tx_date)), count(*) FROM {BQ_UNDETECTED} GROUP BY 1"
     ))
-    # Bronze "정상·유니크"(품질통과 + row_id DISTINCT) — batch_silver `_reject_reason`/row_id 를 SQL로
-    # 미러링(원천: spark/batch_silver.py). 이걸 Silver와 대조하면 Bronze→Silver 무손실·무중복 독립 교차검증.
-    # tx_date = 2016-01-01 00:00 + (step-1)h. valid = 아래 reject 조건 전부 미해당.
-    bronze_by_ms = dict(_bq_query(
-        f"""
-        SELECT UNIX_MILLIS(TIMESTAMP(DATE(TIMESTAMP_ADD(TIMESTAMP '{STEP_EPOCH}',
-                 INTERVAL (CAST(step AS INT64) - 1) HOUR)))) AS d_ms,
-               COUNT(DISTINCT TO_HEX(SHA256(CONCAT(nameOrig,'|',step,'|',type,'|',amount,'|',nameDest)))) AS n
-        FROM {BQ_BRONZE}
-        WHERE step IS NOT NULL AND amount IS NOT NULL AND nameOrig IS NOT NULL
-          AND type IS NOT NULL AND nameDest IS NOT NULL
-          AND SAFE_CAST(amount AS FLOAT64) IS NOT NULL AND SAFE_CAST(amount AS FLOAT64) > 0
-          AND SAFE_CAST(step AS INT64) BETWEEN 1 AND 743
-          AND type IN ('PAYMENT','TRANSFER','CASH_OUT','CASH_IN','DEBIT')
-          AND isFraud IN ('0','1') AND isFlaggedFraud IN ('0','1')
-          AND NOT COALESCE(SAFE_CAST(oldbalanceOrg AS FLOAT64) < 0, FALSE)
-          AND NOT COALESCE(SAFE_CAST(newbalanceOrig AS FLOAT64) < 0, FALSE)
-        GROUP BY d_ms
-        """
-    ))
+    # Bronze "정상·유니크"(품질통과 + row_id DISTINCT) — `_reconcile`과 동일 헬퍼를 공유한다
+    # (SQL을 복사하면 row_id/품질조건 정의가 두 벌로 갈라져 조용히 어긋난다).
+    # 여기서는 관측용 Gauge(fraud_by_date_bs_diff)를 위한 값이고, 실패 판정은 `_reconcile` 담당.
+    bronze_by_ms = _bronze_valid_by_date()
 
     # ── 2) 시간순(tx_hour) 집계 — 라벨은 epoch millis(순서/시각 라벨용) ──
     by_hour = _bq_query(
@@ -319,16 +390,35 @@ def _push_metrics(ds: str) -> None:
         g_dr_ok.labels(d_ms=str(ms)).set(float(dr_succ.get(ms, 0)))
         g_dr_ng.labels(d_ms=str(ms)).set(float(dr_fail.get(ms, 0)))
 
-    pushadd_to_gateway(PUSHGATEWAY, job="fraud_pipeline", registry=g_reg)
-
+    # 집계 결과를 push **전에** 찍는다 — 전송이 실패해 skip 되더라도 수치는 로그에 남아야 한다.
     print(
         f"[push_metrics] ds={ds} | "
         f"actual={actual} flagged={flagged} tp={tp} fp={fp} fn={fn} "
         f"precision={precision:.3f} recall={recall:.3f} reconcile_match={reconcile_match:.0f} | "
         f"bs_diff_max={bs_max} sg_diff_max={sg_max} (0=정합) | "
         f"undetected_total={undetected_total} dates={len(by_date)} hours={len(by_hour)} "
-        f"types={len(by_type)} mule_accounts={len(mule_accounts)} dagruns={len(dr_seen)} → Pushgateway"
+        f"types={len(by_type)} mule_accounts={len(mule_accounts)} dagruns={len(dr_seen)}"
     )
+
+    # ⚠ 관측 실패가 데이터 파이프라인을 죽이면 안 된다.
+    # 실측 이력: Pushgateway 미기동(모니터링 프로필 누락)으로 이 호출이 DNS 해석에 실패 →
+    # 재시도 소진 → 태스크 실패 → BackfillUnfinished → **31일 백필 전체 중단**.
+    # reconcile까지 통과한 run이 메트릭 전송 하나로 실패 처리되는 건 잘못이다.
+    #
+    # 조용히 삼키지는 않는다 — AirflowSkipException 으로 태스크를 SKIPPED 로 남겨 "메트릭이
+    # 안 나갔다"가 UI에서 보이게 한다(성공으로 위장하면 알 수가 없다).
+    # 재시도도 걸지 않는다: 이 함수는 매번 전체 테이블을 다시 집계해 push하므로(전역 게이지),
+    # 한 번 걸러도 다음 run이 전부 다시 올린다 — 자가 치유된다.
+    # 감싸는 범위는 push 호출 한 줄로 좁힌다. 위쪽 BigQuery 집계 실패는 데이터 문제이므로
+    # 그대로 실패시켜야 한다.
+    try:
+        pushadd_to_gateway(PUSHGATEWAY, job="fraud_pipeline", registry=g_reg)
+    # 광범위 except은 의도적 — 전송 계층 실패 전부(DNS/연결거부/타임아웃/HTTP)를 흡수한다.
+    except Exception as e:
+        raise AirflowSkipException(
+            f"Pushgateway({PUSHGATEWAY}) 전송 실패 — 파이프라인은 계속 진행: {e}"
+        ) from e
+    print(f"[push_metrics] ds={ds} → Pushgateway 전송 완료")
 
 
 with DAG(
@@ -337,7 +427,10 @@ with DAG(
     default_args=default_args,
     schedule="@daily",
     start_date=datetime(2016, 1, 1, tzinfo=timezone.utc),
-    end_date=datetime(2016, 1, 6, tzinfo=timezone.utc),   # 5일치 백필용(ds 01-01~01-05) — 전량 검증 시 2016-02-01로 복원
+    # 전량 백필: ds 2016-01-01~01-31 (31 run). end_date는 logical_date에 **inclusive** —
+    # 2016-02-01로 두면 데이터 없는 ds=02-01 run이 하나 더 생겨 bronze_sensor가 2h 대기 후 실패한다.
+    # 원본 CSV 실측: 6,362,620행 / step 1~743 → tx_date 01-01~01-31 (743h = 30일 23시간).
+    end_date=datetime(2016, 1, 31, tzinfo=timezone.utc),
     catchup=True,
     max_active_runs=1,               # 같은 파티션 동시 처리 방지
     tags=["fraud", "medallion", "batch"],
@@ -372,6 +465,16 @@ with DAG(
         project_id=GCP_PROJECT_ID,
         region=GCP_REGION,
         batch_id="silver-{{ ds_nodash }}-{{ macros.uuid.uuid4().hex[:8] }}",
+        # 배치 완료 대기의 상한(초). 기본값 None이면 LRO 폴링이 **무기한** 매달린다 —
+        # 실측으로 10시간 21분 걸린 적이 있다(그때 원인은 호스트 절전이었지만 상한이 없는
+        # 구조는 그대로였다). default_args 의 execution_timeout 은 SIGALRM 기반이라 VM이
+        # 멈추면 타이머도 같이 멈춰 그때 발동하지 않았다.
+        #
+        # 300초 = 실측 배치 전체 120초(프로비저닝 48s + Spark 72s, 가장 큰 날 01-01 기준)의
+        # 2.5배. 타임아웃은 "걸렸을 때 빠져나오는 값"이지 "절대 안 걸리는 값"이 아니다.
+        # 오탐이 나도 안전하다 — 재시도가 새 batch_id로 제출하고 partitionOverwrite=dynamic
+        # 이라 같은 파티션을 덮어써 결과가 같다(배치 하나 값만 낭비).
+        timeout=300,
         batch={
             "pyspark_batch": {
                 "main_python_file_uri": SPARK_CODE_URI,
@@ -379,11 +482,13 @@ with DAG(
                     # topics/transactions = Kafka Connect GCS Sink 실제 적재 경로(topics.dir=topics
                     # 기본값). 버킷 루트를 그대로 읽으면 과거 스모크테스트 잔여물과 파티션 구조가
                     # 충돌해 Spark가 "Conflicting directory structures" 로 실패한다(실측 확인).
-                    f"--bronze-path=gs://{GCS_BUCKET_BRONZE}/topics/transactions",
+                    #
+                    # date= 는 **이벤트일**이다(producer의 event_time 기반). 처리 대상 하루치
+                    # 폴더만 넘겨 매 배치 Bronze 전량(6.36M행) 스캔을 없앤다 — 예전엔 인제스트
+                    # 날짜로 파티셔닝돼 있어 프루닝이 불가능했다.
+                    f"--bronze-path=gs://{GCS_BUCKET_BRONZE}/topics/transactions/date={{{{ ds }}}}",
                     f"--silver-path=gs://{GCS_BUCKET_SILVER}",
-                    # DAG가 소유한 기준시각을 명시 전달 — Spark가 자기 환경에서 따로 구하면
-                    # (Dataproc엔 STEP_EPOCH env가 없음) DAG와 tx_date 계산이 어긋난다.
-                    f"--step-epoch={STEP_EPOCH}",
+                    # --step-epoch 는 넘기지 않는다 — tx_timestamp 를 event_time 에서 직접 만든다.
                     "--target-tx-date={{ ds }}",
                 ],
             },
@@ -404,9 +509,12 @@ with DAG(
         bash_command=COMPOSE + " run --rm dbt test --profiles-dir .",
     )
 
+    # 정합성 검증. {{ ds }} = 이번 run이 처리한 tx_date이자 **검사 상한**(그 이후 일자는
+    # 아직 Silver에 있을 이유가 없다 — 백필 도중 미래 일자를 유실로 오판하지 않도록).
     reconcile = PythonOperator(
         task_id="reconcile",
         python_callable=_reconcile,
+        op_kwargs={"ds": "{{ ds }}"},
     )
 
     # ⑥ 모니터링: 정합성 통과 후 메트릭 push. {{ ds }} = 처리한 tx_date.
