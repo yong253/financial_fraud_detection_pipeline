@@ -192,6 +192,15 @@ services:
       CONNECT_CONFIG_STORAGE_REPLICATION_FACTOR: 3
       CONNECT_OFFSET_STORAGE_REPLICATION_FACTOR: 3
       CONNECT_STATUS_STORAGE_REPLICATION_FACTOR: 3
+      # = offset.flush.interval.ms (CONNECT_ 접두사는 이미지가 워커 프로퍼티로 변환한다).
+      # gcs-sink-bronze 의 rotate.schedule.interval.ms(10000)와 **짝**이다 — rotate 는 "파일을
+      # 닫을 예정 시각"을 정할 뿐 스스로 실행되지 않고, 그 조건이 참인지 확인하러 오는 주기가
+      # 이 값이다. 스트림이 멎으면 회전 판정을 깨우는 유일한 경로라 둘 다 낮춰야 꼬리가
+      # 줄어든다 — 꼬리는 위상 의존이라 `상한 = 두 값의 합`, `기대값 = 그 절반`이다:
+      # 60000/60000 이던 것을 10000/30000 으로 낮춰 상한 120s→40s, 기대값 60s→20s.
+      # 한쪽만 바꾸면 그 항만 줄어 효과가 거의 없다(실측: rotate 만 3s → 꼬리 23s).
+      # 근거: PERFORMANCE.md "Q2 규명" / "Part 4".
+      CONNECT_OFFSET_FLUSH_INTERVAL_MS: 30000
       CONNECT_KEY_CONVERTER: "org.apache.kafka.connect.storage.StringConverter"
       CONNECT_VALUE_CONVERTER: "org.apache.kafka.connect.json.JsonConverter"
       CONNECT_VALUE_CONVERTER_SCHEMAS_ENABLE: "false"
