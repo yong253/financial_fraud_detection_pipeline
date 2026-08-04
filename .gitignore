@@ -3,6 +3,7 @@
 credentials/
 !dbt/profiles.yml
 TODO.md
+PERFORMANCE.md
 
 # 비공개(사용자 허락 전까지 미공개)
 README.md
