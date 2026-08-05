@@ -136,14 +136,24 @@ def main() -> None:
 
     # ── Step 1: Bronze 읽기 (평탄 JSON, 명시 스키마) ────────────────────────
     # BRONZE_PATH는 하루치 파티션(date=YYYY-MM-DD)이라 전량 스캔이 아니다.
-    bronze_df    = spark.read.schema(BRONZE_SCHEMA).json(BRONZE_PATH)
+    #
+    # **cache 필수.** 아래 단계들이 이 DataFrame을 여러 번 소비하는데, Spark는 액션마다
+    # 리니지를 소스부터 다시 계산한다 → 캐시가 없으면 **GCS에서 JSON을 매번 다시 읽고
+    # 파싱**한다. 전량 실측(2026-08-05, 6.36M행): 캐시 없이 액션 9개 → 읽은 양 15.98 GiB
+    # (실제 1.78 GiB의 **9배**). 캐시 + 집계 병합으로 1배가 됐다.
+    # 캐시는 **셔플 이전**(bronze_df / labeled)에만 건다 — Step 5의 경고 참조.
+    bronze_df    = spark.read.schema(BRONZE_SCHEMA).json(BRONZE_PATH).cache()
 
     # ── Step 2: EOD 마커 분리 — 반드시 품질 검사 **앞**에서 ─────────────────
     # 마커는 거래가 아니라 "그날 데이터가 다 왔다"는 신호다. 품질 검사에 넘기면 필수 필드가
     # 없어 parse_error 로 Quarantine에 쌓이고, 프로젝트 규칙상 삭제할 수도 없다.
     tx_df        = bronze_df.filter(F.col("record_type").isNull())
-    marker_count = bronze_df.filter(F.col("record_type") == MARKER_RECORD_TYPE).count()
-    bronze_count = tx_df.count()
+    # 거래/마커 건수를 **단일 액션**으로 함께 센다(예전엔 count 2회 = 스캔 2회).
+    _c = bronze_df.agg(
+        F.count(F.when(F.col("record_type").isNull(), 1)).alias("tx"),
+        F.count(F.when(F.col("record_type") == MARKER_RECORD_TYPE, 1)).alias("marker"),
+    ).collect()[0]
+    bronze_count, marker_count = int(_c["tx"]), int(_c["marker"])
     print(f"[silver] bronze 읽기: 거래 {bronze_count}행 (EOD 마커 {marker_count}건 제외)")
 
     # ── Step 3: valid / quarantine 분리 (payload 필드가 이미 top-level) ─────
@@ -151,9 +161,15 @@ def main() -> None:
     #  isNotNull 이 상보적이라 **수학적으로 항상 참**이었고 — 발동할 수 있는 경로가 없다 —
     #  대신 전량 스캔 2회를 쓰고 있었다. 실제 무손실 검증은 Airflow `reconcile` 태스크가
     #  Bronze(품질통과·유니크) ↔ Silver 를 일자별로 대조해 수행한다.)
-    labeled    = tx_df.withColumn("reject_reason", _reject_reason())
+    labeled    = tx_df.withColumn("reject_reason", _reject_reason()).cache()
     valid_raw  = labeled.filter(F.col("reject_reason").isNull())
     quarantine = labeled.filter(F.col("reject_reason").isNotNull())
+    # 통과/격리 건수도 **단일 액션**으로(예전엔 Step 8에서 count 2회를 따로 돌렸다).
+    _q = labeled.agg(
+        F.count(F.when(F.col("reject_reason").isNull(), 1)).alias("valid"),
+        F.count(F.when(F.col("reject_reason").isNotNull(), 1)).alias("quar"),
+    ).collect()[0]
+    valid_raw_count, quar_count = int(_q["valid"]), int(_q["quar"])
 
     # ── Step 4: Silver 컬럼 변환 ─────────────────────────────────────────
     # tx_timestamp: producer가 step에서 계산해 실어 보낸 event_time(epoch millis).
@@ -209,9 +225,22 @@ def main() -> None:
         print(f"[silver] TARGET_TX_DATE={TARGET_TX_DATE} → 해당 일자만 기록")
 
     # ── Step 5: dedup (Kafka Connect at-least-once로 인한 Bronze 중복 흡수) ──
+    #
+    # ⚠ **셔플 결과(dropDuplicates 이후)는 절대 cache 하지 않는다.** 실측 함정:
+    #   `dropDuplicates(...).cache()` 를 걸었더니 같은 데이터(8,578행)에서 Spark 실행
+    #   43.9초 → 129.4초, DCU-초 711 → 2,441 로 3배 악화됐다. 원인은
+    #   `spark.sql.optimizer.canChangeCachedPlanOutputPartitioning` 기본값 false —
+    #   **캐시된 플랜에는 AQE의 셔플 파티션 병합이 적용되지 않는다.** Serverless 기본
+    #   `spark.sql.shuffle.partitions=1000`(이벤트 로그 실측)이 그대로 write 로 흘러
+    #   write 태스크가 6개 → 1000개로 폭발했다.
     pre_dedup_count = silver_df.count()          # (날짜 필터 적용 후) 기록 후보 수
     silver_df       = silver_df.dropDuplicates(["row_id"])
-    silver_count    = silver_df.count()
+    # 최종 행수와 is_suspicious 건수를 **단일 액션**으로(예전엔 count 2회 = 셔플 2회).
+    _s = silver_df.agg(
+        F.count(F.lit(1)).alias("n"),
+        F.count(F.when(F.col("is_suspicious"), 1)).alias("susp"),
+    ).collect()[0]
+    silver_count, suspicious_count = int(_s["n"]), int(_s["susp"])
     dedup_removed   = pre_dedup_count - silver_count
 
     # ── Step 6: Silver 저장 (dynamic overwrite, 멱등) ────────────────────
@@ -257,13 +286,16 @@ def main() -> None:
         .parquet(SILVER_QUAR_PATH)
 
     # ── Step 8: 완료 출력 ────────────────────────────────────────────────
-    valid_raw_count  = valid_raw.count()
-    quar_count       = quarantine.count()
-    suspicious_count = silver_df.filter("is_suspicious").count()
+    # 여기서 count를 다시 돌리지 않는다 — 위에서 단일 액션으로 이미 구했다.
+    # (예전엔 이 자리에서 count 3회를 더 돌려 전체 리니지를 세 번 재계산했다.)
     print(f"[silver] bronze_tx={bronze_count}  eod_markers={marker_count}")
     print(f"[silver] valid_raw={valid_raw_count}  quarantine={quar_count}  dedup_removed={dedup_removed}")
     print(f"[silver] silver_written={silver_count}  is_suspicious={suspicious_count}")
     print(f"[silver] 완료 → {SILVER_PATH}")
+
+    # 캐시 해제 — 배치 종료 직전이라 기능상 필수는 아니지만, 의도를 코드에 남긴다.
+    labeled.unpersist()
+    bronze_df.unpersist()
 
 
 if __name__ == "__main__":
