@@ -245,8 +245,12 @@ def main() -> None:
             F.to_json(F.struct(*payload_cols)).alias("value"),
             kafka_ts.alias("kafka_timestamp"),
             "reject_reason",
+            # 파티션 컬럼은 **select 안에서** 만든다. 뒤에 .withColumn 으로 붙이면 이미
+            # value/kafka_timestamp/reject_reason 만 남은 뒤라, TARGET_TX_DATE 가 없는
+            # 전량 모드의 폴백(F.to_date(tx_ts) → event_time 참조)이 UNRESOLVED_COLUMN 으로
+            # 죽는다. 일별 모드는 F.lit() 이라 컬럼을 안 봐서 이 결함이 드러나지 않았다.
+            quar_part.alias("tx_date"),
         ) \
-        .withColumn("tx_date", quar_part) \
         .write \
         .mode("overwrite") \
         .partitionBy("tx_date") \
