@@ -1,16 +1,16 @@
 name: CD                      # dbt(Gold) 모델을 실제 BigQuery에 배포
 
 "on":
-  workflow_run:
-    workflows: ["CI"]         # CI 통과한 커밋만 배포(테스트 실패한 코드가 실배포되는 사고 방지)
-    types: [completed]
-    branches: [master]
-  workflow_dispatch:          # 수동 재배포용(Actions 탭에서 버튼으로 실행 가능)
+  # 수동 실행 전용(Actions 탭 → CD → Run workflow).
+  # 이전에는 CI 성공 시 자동 실행(workflow_run)이었으나, 배포 대상이 작성자 개인 GCP
+  # 프로젝트라 포크·클론한 사람의 push에서 의미 있게 동작할 수 없다. 아래 Repository
+  # Variables가 없으면 compose의 :? 가 발동해 실패하므로, master push마다 실패가 쌓였다.
+  # 배포 파이프라인 자체는 그대로 두고 트리거만 수동으로 돌린다.
+  workflow_dispatch:
 
 jobs:
   deploy-dbt:
     runs-on: ubuntu-latest
-    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
     # 실제 배포 대상 — compose가 :? 로 필수화한 개인 GCP 값을 Repository Variables(시크릿 아님,
     # Settings → Secrets and variables → Actions → Variables)에서 가져온다. 미등록 시 빈 문자열이
     # 되어 :? 가 발동해 배포가 실패한다(작성자 프로젝트로 조용히 배포되는 것보다 안전).
