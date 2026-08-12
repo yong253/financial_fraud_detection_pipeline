@@ -1,279 +1,1714 @@
 {
   "uid": "fraud-overview",
   "title": "Fraud Pipeline — Overview",
-  "tags": ["fraud", "medallion", "batch"],
+  "tags": [
+    "fraud",
+    "medallion",
+    "batch"
+  ],
   "timezone": "browser",
   "schemaVersion": 39,
-  "version": 5,
+  "version": 15,
   "refresh": "30s",
-  "time": { "from": "now-30d", "to": "now" },
-  "templating": { "list": [] },
-  "annotations": { "list": [] },
+  "time": {
+    "from": "now-30d",
+    "to": "now"
+  },
+  "templating": {
+    "list": []
+  },
+  "annotations": {
+    "list": []
+  },
   "panels": [
     {
       "type": "row",
-      "title": "🎯 핵심 요약 (Headline)",
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+      "title": "🌅 최근 배치 결과 (마지막 DAG run)",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
       "collapsed": false,
       "panels": []
     },
     {
       "type": "stat",
-      "title": "레이어 정합성 (무손실·무중복)",
-      "datasource": { "type": "prometheus", "uid": "fraud-prometheus" },
-      "gridPos": { "h": 4, "w": 4, "x": 0, "y": 1 },
-      "fieldConfig": { "defaults": { "mappings": [ { "type": "value", "options": { "1": { "text": "정합 OK", "color": "green", "index": 0 }, "0": { "text": "불일치", "color": "red", "index": 1 } } } ], "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [ { "color": "red", "value": null }, { "color": "green", "value": 1 } ] } }, "overrides": [] },
-      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "colorMode": "background", "graphMode": "none", "textMode": "value" },
-      "targets": [ { "refId": "A", "datasource": { "type": "prometheus", "uid": "fraud-prometheus" }, "expr": "fraud_reconcile_match", "instant": true } ]
+      "title": "배치 결과",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "fraud-prometheus"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 0,
+        "y": 1
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "fraud-prometheus"
+          },
+          "expr": "fraud_run_date",
+          "instant": true
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "noValue": "실행 없음",
+          "mappings": [
+            {
+              "type": "special",
+              "options": {
+                "match": "null",
+                "result": {
+                  "text": "실행 없음",
+                  "color": "red",
+                  "index": 0
+                }
+              }
+            },
+            {
+              "type": "range",
+              "options": {
+                "from": 0,
+                "to": 1000000000000000000,
+                "result": {
+                  "text": "성공",
+                  "color": "green",
+                  "index": 1
+                }
+              }
+            }
+          ]
+        },
+        "overrides": []
+      }
     },
     {
       "type": "stat",
-      "title": "마지막 배치 성공",
-      "datasource": { "type": "prometheus", "uid": "fraud-prometheus" },
-      "gridPos": { "h": 4, "w": 4, "x": 4, "y": 1 },
-      "fieldConfig": { "defaults": { "unit": "dateTimeFromNow" }, "overrides": [] },
-      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "colorMode": "value", "graphMode": "none" },
-      "targets": [ { "refId": "A", "datasource": { "type": "prometheus", "uid": "fraud-prometheus" }, "expr": "fraud_batch_last_success_timestamp_seconds * 1000", "instant": true } ]
+      "title": "처리 대상일",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "fraud-prometheus"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 4,
+        "y": 1
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "fraud-prometheus"
+          },
+          "expr": "fraud_run_date",
+          "instant": true
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "value"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "time:YYYY-MM-DD",
+          "noValue": "—",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      }
     },
     {
       "type": "stat",
-      "title": "태스크 실패 누계",
-      "datasource": { "type": "prometheus", "uid": "fraud-prometheus" },
-      "gridPos": { "h": 4, "w": 4, "x": 8, "y": 1 },
-      "fieldConfig": { "defaults": { "unit": "short", "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "red", "value": 1 } ] } }, "overrides": [] },
-      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "colorMode": "background", "graphMode": "none" },
-      "targets": [ { "refId": "A", "datasource": { "type": "prometheus", "uid": "fraud-prometheus" }, "expr": "sum(airflow_ti_failures)", "instant": true } ]
+      "title": "배치 완료 시각",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "fraud-prometheus"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 8,
+        "y": 1
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "fraud-prometheus"
+          },
+          "expr": "fraud_batch_last_success_timestamp_seconds * 1000",
+          "instant": true
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "dateTimeFromNow",
+          "noValue": "—",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      }
     },
     {
       "type": "stat",
-      "title": "실제 사기 건수 (isFraud=1)",
-      "datasource": { "type": "prometheus", "uid": "fraud-prometheus" },
-      "gridPos": { "h": 4, "w": 4, "x": 12, "y": 1 },
-      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
-      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "colorMode": "value", "graphMode": "none" },
-      "targets": [ { "refId": "A", "datasource": { "type": "prometheus", "uid": "fraud-prometheus" }, "expr": "fraud_actual_total", "instant": true } ]
+      "title": "정합성 검증",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "fraud-prometheus"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 12,
+        "y": 1
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "fraud-prometheus"
+          },
+          "expr": "fraud_run_bs_diff",
+          "instant": true
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "noValue": "—",
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": {
+                  "text": "통과",
+                  "color": "green",
+                  "index": 0
+                }
+              }
+            },
+            {
+              "type": "range",
+              "options": {
+                "from": 1,
+                "to": null,
+                "result": {
+                  "text": "불일치",
+                  "color": "red",
+                  "index": 1
+                }
+              }
+            },
+            {
+              "type": "range",
+              "options": {
+                "from": null,
+                "to": -1,
+                "result": {
+                  "text": "불일치",
+                  "color": "red",
+                  "index": 2
+                }
+              }
+            }
+          ],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      }
     },
     {
       "type": "stat",
-      "title": "미탐지 사기 건수 (룰이 놓침)",
-      "datasource": { "type": "prometheus", "uid": "fraud-prometheus" },
-      "gridPos": { "h": 4, "w": 4, "x": 16, "y": 1 },
-      "fieldConfig": { "defaults": { "unit": "short", "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "orange", "value": 1 } ] } }, "overrides": [] },
-      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "colorMode": "value", "graphMode": "none" },
-      "targets": [ { "refId": "A", "datasource": { "type": "prometheus", "uid": "fraud-prometheus" }, "expr": "fraud_undetected_total", "instant": true } ]
+      "title": "처리 행수",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "fraud-prometheus"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 16,
+        "y": 1
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "fraud-prometheus"
+          },
+          "expr": "fraud_run_rows",
+          "instant": true
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "noValue": "—",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      }
     },
     {
       "type": "stat",
-      "title": "총 처리 행수 (Silver)",
-      "datasource": { "type": "prometheus", "uid": "fraud-prometheus" },
-      "gridPos": { "h": 4, "w": 4, "x": 20, "y": 1 },
-      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
-      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "colorMode": "value", "graphMode": "none" },
-      "targets": [ { "refId": "A", "datasource": { "type": "prometheus", "uid": "fraud-prometheus" }, "expr": "sum(fraud_by_date_rows)", "instant": true } ]
+      "title": "사기 건수 (isFraud=1)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "fraud-prometheus"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 20,
+        "y": 1
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "fraud-prometheus"
+          },
+          "expr": "fraud_run_fraud",
+          "instant": true
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "noValue": "—",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      }
     },
-
     {
       "type": "row",
       "title": "🔗 파이프라인 신뢰성·운영 (층별 무결성 · 처리량 · 구간 소요시간)",
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 5 },
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 5
+      },
       "collapsed": false,
       "panels": []
     },
     {
       "type": "trend",
       "title": "Bronze → Silver 정합성 (차이=0 정상)",
-      "datasource": { "type": "prometheus", "uid": "fraud-prometheus" },
-      "gridPos": { "h": 8, "w": 6, "x": 0, "y": 6 },
-      "fieldConfig": { "defaults": { "unit": "short", "decimals": 0, "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 10, "showPoints": "always", "pointSize": 7 }, "color": { "mode": "fixed", "fixedColor": "green" } }, "overrides": [ { "matcher": { "id": "byName", "options": "d_ms" }, "properties": [ { "id": "unit", "value": "time:MM-DD" } ] } ] },
-      "options": { "xField": "d_ms", "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "single" } },
-      "targets": [ { "refId": "A", "datasource": { "type": "prometheus", "uid": "fraud-prometheus" }, "expr": "fraud_by_date_bs_diff", "instant": true, "format": "table" } ],
-      "transformations": [ { "id": "labelsToFields", "options": { "mode": "columns", "keepLabels": ["d_ms"] } }, { "id": "convertFieldType", "options": { "conversions": [ { "targetField": "d_ms", "destinationType": "number" } ], "fields": {} } }, { "id": "organize", "options": { "excludeByName": { "Time": true, "__name__": true, "instance": true, "job": true, "exported_job": true }, "renameByName": { "Value": "Bronze−Silver 차이" } } } ]
-    },
-    {
-      "type": "trend",
-      "title": "Silver → Gold 정합성 (차이=0 정상)",
-      "datasource": { "type": "prometheus", "uid": "fraud-prometheus" },
-      "gridPos": { "h": 8, "w": 6, "x": 6, "y": 6 },
-      "fieldConfig": { "defaults": { "unit": "short", "decimals": 0, "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 10, "showPoints": "always", "pointSize": 7 }, "color": { "mode": "fixed", "fixedColor": "green" } }, "overrides": [ { "matcher": { "id": "byName", "options": "d_ms" }, "properties": [ { "id": "unit", "value": "time:MM-DD" } ] } ] },
-      "options": { "xField": "d_ms", "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "single" } },
-      "targets": [ { "refId": "A", "datasource": { "type": "prometheus", "uid": "fraud-prometheus" }, "expr": "fraud_by_date_sg_diff", "instant": true, "format": "table" } ],
-      "transformations": [ { "id": "labelsToFields", "options": { "mode": "columns", "keepLabels": ["d_ms"] } }, { "id": "convertFieldType", "options": { "conversions": [ { "targetField": "d_ms", "destinationType": "number" } ], "fields": {} } }, { "id": "organize", "options": { "excludeByName": { "Time": true, "__name__": true, "instance": true, "job": true, "exported_job": true }, "renameByName": { "Value": "Silver−Gold 차이" } } } ]
+      "datasource": {
+        "type": "prometheus",
+        "uid": "fraud-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 0,
+        "y": 6
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "showPoints": "always",
+            "pointSize": 7
+          },
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "green"
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "d_ms"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "time:MM-DD"
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "xField": "d_ms",
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "single"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "fraud-prometheus"
+          },
+          "expr": "fraud_by_date_bs_diff",
+          "instant": true,
+          "format": "table"
+        }
+      ],
+      "transformations": [
+        {
+          "id": "labelsToFields",
+          "options": {
+            "mode": "columns",
+            "keepLabels": [
+              "d_ms"
+            ]
+          }
+        },
+        {
+          "id": "convertFieldType",
+          "options": {
+            "conversions": [
+              {
+                "targetField": "d_ms",
+                "destinationType": "number"
+              }
+            ],
+            "fields": {}
+          }
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "__name__": true,
+              "instance": true,
+              "job": true,
+              "exported_job": true
+            },
+            "renameByName": {
+              "Value": "Bronze−Silver 차이"
+            }
+          }
+        }
+      ]
     },
     {
       "type": "trend",
       "title": "일자별 처리 행수 (Silver)",
-      "datasource": { "type": "prometheus", "uid": "fraud-prometheus" },
-      "gridPos": { "h": 8, "w": 6, "x": 12, "y": 6 },
-      "fieldConfig": { "defaults": { "unit": "short", "decimals": 0, "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 10, "showPoints": "always", "pointSize": 7 } }, "overrides": [ { "matcher": { "id": "byName", "options": "d_ms" }, "properties": [ { "id": "unit", "value": "time:MM-DD" } ] } ] },
-      "options": { "xField": "d_ms", "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "single" } },
-      "targets": [ { "refId": "A", "datasource": { "type": "prometheus", "uid": "fraud-prometheus" }, "expr": "fraud_by_date_rows", "instant": true, "format": "table" } ],
-      "transformations": [ { "id": "labelsToFields", "options": { "mode": "columns", "keepLabels": ["d_ms"] } }, { "id": "convertFieldType", "options": { "conversions": [ { "targetField": "d_ms", "destinationType": "number" } ], "fields": {} } }, { "id": "organize", "options": { "excludeByName": { "Time": true, "__name__": true, "instance": true, "job": true, "exported_job": true }, "renameByName": { "Value": "처리 행수" } } } ]
+      "datasource": {
+        "type": "prometheus",
+        "uid": "fraud-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 8,
+        "y": 6
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "showPoints": "always",
+            "pointSize": 7
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "d_ms"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "time:MM-DD"
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "xField": "d_ms",
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "single"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "fraud-prometheus"
+          },
+          "expr": "fraud_by_date_rows",
+          "instant": true,
+          "format": "table"
+        }
+      ],
+      "transformations": [
+        {
+          "id": "labelsToFields",
+          "options": {
+            "mode": "columns",
+            "keepLabels": [
+              "d_ms"
+            ]
+          }
+        },
+        {
+          "id": "convertFieldType",
+          "options": {
+            "conversions": [
+              {
+                "targetField": "d_ms",
+                "destinationType": "number"
+              }
+            ],
+            "fields": {}
+          }
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "__name__": true,
+              "instance": true,
+              "job": true,
+              "exported_job": true
+            },
+            "renameByName": {
+              "Value": "처리 행수"
+            }
+          }
+        }
+      ]
     },
     {
       "type": "barchart",
       "title": "구간별 배치 소요시간 (평균, 초)",
-      "datasource": { "type": "prometheus", "uid": "fraud-prometheus" },
-      "gridPos": { "h": 8, "w": 6, "x": 18, "y": 6 },
-      "fieldConfig": { "defaults": { "unit": "s", "decimals": 1 }, "overrides": [] },
-      "options": { "orientation": "horizontal", "showValue": "auto", "legend": { "displayMode": "list", "placement": "bottom" }, "xField": "구간" },
-      "targets": [ { "refId": "A", "datasource": { "type": "prometheus", "uid": "fraud-prometheus" }, "expr": "airflow_task_duration_sum{dag_id=\"fraud_pipeline\"} / airflow_task_duration_count{dag_id=\"fraud_pipeline\"}", "instant": true, "format": "table" } ],
-      "transformations": [ { "id": "labelsToFields", "options": { "mode": "columns", "keepLabels": ["task_id"] } }, { "id": "organize", "options": { "excludeByName": { "Time": true, "__name__": true, "instance": true, "job": true, "exported_job": true, "dag_id": true }, "renameByName": { "task_id": "구간", "Value": "평균 초" } } } ]
+      "datasource": {
+        "type": "prometheus",
+        "uid": "fraud-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 6
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "decimals": 1
+        },
+        "overrides": []
+      },
+      "options": {
+        "orientation": "horizontal",
+        "showValue": "auto",
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "xField": "구간"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "fraud-prometheus"
+          },
+          "expr": "airflow_task_duration_sum{dag_id=\"fraud_pipeline\"} / airflow_task_duration_count{dag_id=\"fraud_pipeline\"}",
+          "instant": true,
+          "format": "table"
+        }
+      ],
+      "transformations": [
+        {
+          "id": "labelsToFields",
+          "options": {
+            "mode": "columns",
+            "keepLabels": [
+              "task_id"
+            ]
+          }
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "__name__": true,
+              "instance": true,
+              "job": true,
+              "exported_job": true,
+              "dag_id": true
+            },
+            "renameByName": {
+              "task_id": "구간",
+              "Value": "평균 초"
+            }
+          }
+        }
+      ]
     },
-
     {
       "type": "row",
       "title": "📊 사기 현황 (Fraud Landscape)",
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 14 },
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 14
+      },
       "collapsed": false,
       "panels": []
     },
     {
       "type": "trend",
       "title": "시간대별 거래 건수 추세 (tx_hour)",
-      "datasource": { "type": "prometheus", "uid": "fraud-prometheus" },
-      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 15 },
-      "fieldConfig": { "defaults": { "unit": "short", "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 10, "showPoints": "never", "lineInterpolation": "smooth" } }, "overrides": [ { "matcher": { "id": "byName", "options": "ts_ms" }, "properties": [ { "id": "unit", "value": "time:MM-DD" } ] } ] },
-      "options": { "xField": "ts_ms", "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "single" } },
-      "targets": [ { "refId": "A", "datasource": { "type": "prometheus", "uid": "fraud-prometheus" }, "expr": "fraud_by_hour_tx", "instant": true, "format": "table" } ],
-      "transformations": [ { "id": "labelsToFields", "options": { "mode": "columns", "keepLabels": ["ts_ms"] } }, { "id": "convertFieldType", "options": { "conversions": [ { "targetField": "ts_ms", "destinationType": "number" } ], "fields": {} } }, { "id": "organize", "options": { "excludeByName": { "Time": true, "__name__": true, "instance": true, "job": true, "exported_job": true }, "renameByName": { "Value": "거래 건수" } } } ]
+      "datasource": {
+        "type": "prometheus",
+        "uid": "fraud-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 0,
+        "y": 15
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "lineInterpolation": "smooth"
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "ts_ms"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "time:MM-DD"
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "xField": "ts_ms",
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "single"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "fraud-prometheus"
+          },
+          "expr": "fraud_by_hour_tx",
+          "instant": true,
+          "format": "table"
+        }
+      ],
+      "transformations": [
+        {
+          "id": "labelsToFields",
+          "options": {
+            "mode": "columns",
+            "keepLabels": [
+              "ts_ms"
+            ]
+          }
+        },
+        {
+          "id": "convertFieldType",
+          "options": {
+            "conversions": [
+              {
+                "targetField": "ts_ms",
+                "destinationType": "number"
+              }
+            ],
+            "fields": {}
+          }
+        },
+        {
+          "id": "filterByValue",
+          "options": {
+            "type": "include",
+            "match": "all",
+            "filters": [
+              {
+                "fieldName": "ts_ms",
+                "config": {
+                  "id": "greaterOrEqual",
+                  "options": {
+                    "value": 1451606400000
+                  }
+                }
+              },
+              {
+                "fieldName": "ts_ms",
+                "config": {
+                  "id": "lower",
+                  "options": {
+                    "value": 1452211200000
+                  }
+                }
+              }
+            ]
+          }
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "__name__": true,
+              "instance": true,
+              "job": true,
+              "exported_job": true
+            },
+            "renameByName": {
+              "Value": "거래 건수"
+            }
+          }
+        }
+      ]
     },
     {
       "type": "trend",
       "title": "시간대별 사기 건수 추세 (tx_hour)",
-      "datasource": { "type": "prometheus", "uid": "fraud-prometheus" },
-      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 15 },
-      "fieldConfig": { "defaults": { "unit": "short", "color": { "mode": "fixed", "fixedColor": "orange" }, "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 15, "showPoints": "never", "lineInterpolation": "smooth" } }, "overrides": [ { "matcher": { "id": "byName", "options": "ts_ms" }, "properties": [ { "id": "unit", "value": "time:MM-DD" } ] } ] },
-      "options": { "xField": "ts_ms", "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "single" } },
-      "targets": [ { "refId": "A", "datasource": { "type": "prometheus", "uid": "fraud-prometheus" }, "expr": "fraud_by_hour_fraud", "instant": true, "format": "table" } ],
-      "transformations": [ { "id": "labelsToFields", "options": { "mode": "columns", "keepLabels": ["ts_ms"] } }, { "id": "convertFieldType", "options": { "conversions": [ { "targetField": "ts_ms", "destinationType": "number" } ], "fields": {} } }, { "id": "organize", "options": { "excludeByName": { "Time": true, "__name__": true, "instance": true, "job": true, "exported_job": true }, "renameByName": { "Value": "사기 건수" } } } ]
+      "datasource": {
+        "type": "prometheus",
+        "uid": "fraud-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 8,
+        "y": 15
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "orange"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 15,
+            "showPoints": "never",
+            "lineInterpolation": "smooth"
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "ts_ms"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "time:MM-DD"
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "xField": "ts_ms",
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "single"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "fraud-prometheus"
+          },
+          "expr": "fraud_by_hour_fraud",
+          "instant": true,
+          "format": "table"
+        }
+      ],
+      "transformations": [
+        {
+          "id": "labelsToFields",
+          "options": {
+            "mode": "columns",
+            "keepLabels": [
+              "ts_ms"
+            ]
+          }
+        },
+        {
+          "id": "convertFieldType",
+          "options": {
+            "conversions": [
+              {
+                "targetField": "ts_ms",
+                "destinationType": "number"
+              }
+            ],
+            "fields": {}
+          }
+        },
+        {
+          "id": "filterByValue",
+          "options": {
+            "type": "include",
+            "match": "all",
+            "filters": [
+              {
+                "fieldName": "ts_ms",
+                "config": {
+                  "id": "greaterOrEqual",
+                  "options": {
+                    "value": 1451606400000
+                  }
+                }
+              },
+              {
+                "fieldName": "ts_ms",
+                "config": {
+                  "id": "lower",
+                  "options": {
+                    "value": 1452211200000
+                  }
+                }
+              }
+            ]
+          }
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "__name__": true,
+              "instance": true,
+              "job": true,
+              "exported_job": true
+            },
+            "renameByName": {
+              "Value": "사기 건수"
+            }
+          }
+        }
+      ]
     },
     {
       "type": "trend",
       "title": "일자별 사기 건수 (isFraud=1)",
-      "datasource": { "type": "prometheus", "uid": "fraud-prometheus" },
-      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 15 },
-      "fieldConfig": { "defaults": { "unit": "short", "decimals": 0, "color": { "mode": "fixed", "fixedColor": "red" }, "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 10, "showPoints": "always", "pointSize": 7 } }, "overrides": [ { "matcher": { "id": "byName", "options": "d_ms" }, "properties": [ { "id": "unit", "value": "time:MM-DD" } ] } ] },
-      "options": { "xField": "d_ms", "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "single" } },
-      "targets": [ { "refId": "A", "datasource": { "type": "prometheus", "uid": "fraud-prometheus" }, "expr": "fraud_by_date_fraud", "instant": true, "format": "table" } ],
-      "transformations": [ { "id": "labelsToFields", "options": { "mode": "columns", "keepLabels": ["d_ms"] } }, { "id": "convertFieldType", "options": { "conversions": [ { "targetField": "d_ms", "destinationType": "number" } ], "fields": {} } }, { "id": "organize", "options": { "excludeByName": { "Time": true, "__name__": true, "instance": true, "job": true, "exported_job": true }, "renameByName": { "Value": "사기 건수" } } } ]
+      "datasource": {
+        "type": "prometheus",
+        "uid": "fraud-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 15
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "red"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "showPoints": "always",
+            "pointSize": 7
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "d_ms"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "time:MM-DD"
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "xField": "d_ms",
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "single"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "fraud-prometheus"
+          },
+          "expr": "fraud_by_date_fraud",
+          "instant": true,
+          "format": "table"
+        }
+      ],
+      "transformations": [
+        {
+          "id": "labelsToFields",
+          "options": {
+            "mode": "columns",
+            "keepLabels": [
+              "d_ms"
+            ]
+          }
+        },
+        {
+          "id": "convertFieldType",
+          "options": {
+            "conversions": [
+              {
+                "targetField": "d_ms",
+                "destinationType": "number"
+              }
+            ],
+            "fields": {}
+          }
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "__name__": true,
+              "instance": true,
+              "job": true,
+              "exported_job": true
+            },
+            "renameByName": {
+              "Value": "사기 건수"
+            }
+          }
+        }
+      ]
     },
     {
       "type": "barchart",
       "title": "거래 유형별 사기 건수 (CASH_OUT/TRANSFER 편중)",
-      "datasource": { "type": "prometheus", "uid": "fraud-prometheus" },
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 23 },
-      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
-      "options": { "orientation": "horizontal", "showValue": "auto", "legend": { "displayMode": "list", "placement": "bottom" }, "xField": "유형" },
-      "targets": [ { "refId": "A", "datasource": { "type": "prometheus", "uid": "fraud-prometheus" }, "expr": "fraud_type_fraud", "instant": true, "format": "table" } ],
-      "transformations": [ { "id": "labelsToFields", "options": { "mode": "columns", "keepLabels": ["type"] } }, { "id": "organize", "options": { "excludeByName": { "Time": true, "__name__": true, "instance": true, "job": true, "exported_job": true }, "renameByName": { "type": "유형", "Value": "사기 건수" } } } ]
+      "datasource": {
+        "type": "prometheus",
+        "uid": "fraud-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 23
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {
+        "orientation": "horizontal",
+        "showValue": "auto",
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "xField": "유형"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "fraud-prometheus"
+          },
+          "expr": "fraud_type_fraud",
+          "instant": true,
+          "format": "table"
+        }
+      ],
+      "transformations": [
+        {
+          "id": "labelsToFields",
+          "options": {
+            "mode": "columns",
+            "keepLabels": [
+              "type"
+            ]
+          }
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "__name__": true,
+              "instance": true,
+              "job": true,
+              "exported_job": true
+            },
+            "renameByName": {
+              "type": "유형",
+              "Value": "사기 건수"
+            }
+          }
+        }
+      ]
     },
-    {
-      "type": "barchart",
-      "title": "사기 수취 계좌 Top 10 (nameDest · mule 후보)",
-      "datasource": { "type": "prometheus", "uid": "fraud-prometheus" },
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 23 },
-      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
-      "options": { "orientation": "horizontal", "showValue": "auto", "legend": { "displayMode": "list", "placement": "bottom" }, "xField": "계좌" },
-      "targets": [ { "refId": "A", "datasource": { "type": "prometheus", "uid": "fraud-prometheus" }, "expr": "topk(10, fraud_mule_recv_count)", "instant": true, "format": "table" } ],
-      "transformations": [ { "id": "labelsToFields", "options": { "mode": "columns", "keepLabels": ["account"] } }, { "id": "organize", "options": { "excludeByName": { "Time": true, "__name__": true, "instance": true, "job": true, "exported_job": true }, "renameByName": { "account": "계좌", "Value": "사기 수신 건수" } } } ]
-    },
-
     {
       "type": "row",
       "title": "🎯 기존 룰 탐지 성능 (isFlaggedFraud vs 정답 isFraud)",
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 31 },
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 31
+      },
       "collapsed": false,
       "panels": []
     },
     {
       "type": "gauge",
       "title": "기존 룰 Precision (정밀도)",
-      "datasource": { "type": "prometheus", "uid": "fraud-prometheus" },
-      "gridPos": { "h": 6, "w": 6, "x": 0, "y": 32 },
-      "fieldConfig": { "defaults": { "unit": "percentunit", "min": 0, "max": 1 }, "overrides": [] },
-      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "showThresholdLabels": false, "showThresholdMarkers": true },
-      "targets": [ { "refId": "A", "datasource": { "type": "prometheus", "uid": "fraud-prometheus" }, "expr": "fraud_rule_precision", "instant": true } ]
+      "datasource": {
+        "type": "prometheus",
+        "uid": "fraud-prometheus"
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 6,
+        "x": 0,
+        "y": 32
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "max": 1
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showThresholdLabels": false,
+        "showThresholdMarkers": true
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "fraud-prometheus"
+          },
+          "expr": "fraud_rule_precision",
+          "instant": true
+        }
+      ]
     },
     {
       "type": "gauge",
       "title": "기존 룰 Recall (재현율)",
-      "datasource": { "type": "prometheus", "uid": "fraud-prometheus" },
-      "gridPos": { "h": 6, "w": 6, "x": 6, "y": 32 },
-      "fieldConfig": { "defaults": { "unit": "percentunit", "min": 0, "max": 1, "thresholds": { "mode": "absolute", "steps": [ { "color": "red", "value": null }, { "color": "orange", "value": 0.3 }, { "color": "green", "value": 0.7 } ] } }, "overrides": [] },
-      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "showThresholdLabels": false, "showThresholdMarkers": true },
-      "targets": [ { "refId": "A", "datasource": { "type": "prometheus", "uid": "fraud-prometheus" }, "expr": "fraud_rule_recall", "instant": true } ]
+      "datasource": {
+        "type": "prometheus",
+        "uid": "fraud-prometheus"
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 6,
+        "x": 6,
+        "y": 32
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "max": 1,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 0.3
+              },
+              {
+                "color": "green",
+                "value": 0.7
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showThresholdLabels": false,
+        "showThresholdMarkers": true
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "fraud-prometheus"
+          },
+          "expr": "fraud_rule_recall",
+          "instant": true
+        }
+      ]
     },
     {
       "type": "bargauge",
       "title": "혼동행렬 (실제 / 탐지 / 맞춤TP / 오탐FP / 놓침FN)",
-      "datasource": { "type": "prometheus", "uid": "fraud-prometheus" },
-      "gridPos": { "h": 6, "w": 12, "x": 12, "y": 32 },
-      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
-      "options": { "orientation": "horizontal", "displayMode": "gradient", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false } },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "fraud-prometheus"
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 12,
+        "x": 12,
+        "y": 32
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {
+        "orientation": "horizontal",
+        "displayMode": "gradient",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      },
       "targets": [
-        { "refId": "A", "datasource": { "type": "prometheus", "uid": "fraud-prometheus" }, "expr": "fraud_actual_total", "instant": true, "legendFormat": "실제 사기" },
-        { "refId": "B", "datasource": { "type": "prometheus", "uid": "fraud-prometheus" }, "expr": "fraud_flagged_total", "instant": true, "legendFormat": "기존 룰 탐지" },
-        { "refId": "C", "datasource": { "type": "prometheus", "uid": "fraud-prometheus" }, "expr": "fraud_true_positive_total", "instant": true, "legendFormat": "맞춤 (TP)" },
-        { "refId": "D", "datasource": { "type": "prometheus", "uid": "fraud-prometheus" }, "expr": "fraud_false_positive_total", "instant": true, "legendFormat": "오탐 (FP)" },
-        { "refId": "E", "datasource": { "type": "prometheus", "uid": "fraud-prometheus" }, "expr": "fraud_undetected_total", "instant": true, "legendFormat": "놓침 (FN)" }
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "fraud-prometheus"
+          },
+          "expr": "fraud_actual_total",
+          "instant": true,
+          "legendFormat": "실제 사기"
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "fraud-prometheus"
+          },
+          "expr": "fraud_flagged_total",
+          "instant": true,
+          "legendFormat": "기존 룰 탐지"
+        },
+        {
+          "refId": "C",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "fraud-prometheus"
+          },
+          "expr": "fraud_true_positive_total",
+          "instant": true,
+          "legendFormat": "맞춤 (TP)"
+        },
+        {
+          "refId": "D",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "fraud-prometheus"
+          },
+          "expr": "fraud_false_positive_total",
+          "instant": true,
+          "legendFormat": "오탐 (FP)"
+        },
+        {
+          "refId": "E",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "fraud-prometheus"
+          },
+          "expr": "fraud_undetected_total",
+          "instant": true,
+          "legendFormat": "놓침 (FN)"
+        }
       ]
     },
-
     {
       "type": "row",
       "title": "🔌 인프라·운영 헬스 (Kafka · Airflow)",
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 38 },
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 38
+      },
       "collapsed": false,
       "panels": []
     },
     {
       "type": "stat",
       "title": "Kafka 브로커 수",
-      "datasource": { "type": "prometheus", "uid": "fraud-prometheus" },
-      "gridPos": { "h": 5, "w": 4, "x": 0, "y": 39 },
-      "fieldConfig": { "defaults": { "thresholds": { "mode": "absolute", "steps": [ { "color": "red", "value": null }, { "color": "green", "value": 3 } ] } }, "overrides": [] },
-      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "colorMode": "value", "graphMode": "none" },
-      "targets": [ { "refId": "A", "datasource": { "type": "prometheus", "uid": "fraud-prometheus" }, "expr": "kafka_brokers", "instant": true } ]
+      "datasource": {
+        "type": "prometheus",
+        "uid": "fraud-prometheus"
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 4,
+        "x": 0,
+        "y": 39
+      },
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 3
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "fraud-prometheus"
+          },
+          "expr": "kafka_brokers",
+          "instant": true
+        }
+      ]
     },
     {
       "type": "stat",
       "title": "transactions 토픽 메시지 수",
-      "datasource": { "type": "prometheus", "uid": "fraud-prometheus" },
-      "gridPos": { "h": 5, "w": 4, "x": 4, "y": 39 },
-      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
-      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "colorMode": "value", "graphMode": "area" },
-      "targets": [ { "refId": "A", "datasource": { "type": "prometheus", "uid": "fraud-prometheus" }, "expr": "sum(kafka_topic_partition_current_offset{topic=\"transactions\"})", "instant": true } ]
+      "datasource": {
+        "type": "prometheus",
+        "uid": "fraud-prometheus"
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 4,
+        "x": 4,
+        "y": 39
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "area"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "fraud-prometheus"
+          },
+          "expr": "sum(kafka_topic_partition_current_offset{topic=\"transactions\"})",
+          "instant": true
+        }
+      ]
     },
     {
       "type": "stat",
       "title": "Consumer lag (밀린 메시지)",
-      "datasource": { "type": "prometheus", "uid": "fraud-prometheus" },
-      "gridPos": { "h": 5, "w": 4, "x": 8, "y": 39 },
-      "fieldConfig": { "defaults": { "unit": "short", "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "orange", "value": 1000 }, { "color": "red", "value": 100000 } ] } }, "overrides": [] },
-      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "colorMode": "value", "graphMode": "area" },
-      "targets": [ { "refId": "A", "datasource": { "type": "prometheus", "uid": "fraud-prometheus" }, "expr": "sum(kafka_consumergroup_lag{topic=\"transactions\"})" } ]
+      "datasource": {
+        "type": "prometheus",
+        "uid": "fraud-prometheus"
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 4,
+        "x": 8,
+        "y": 39
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 1000
+              },
+              {
+                "color": "red",
+                "value": 100000
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "area"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "fraud-prometheus"
+          },
+          "expr": "sum(kafka_consumergroup_lag{topic=\"transactions\"})"
+        }
+      ]
     },
     {
       "type": "stat",
       "title": "스케줄러 heartbeat (/분)",
-      "datasource": { "type": "prometheus", "uid": "fraud-prometheus" },
-      "gridPos": { "h": 5, "w": 4, "x": 12, "y": 39 },
-      "fieldConfig": { "defaults": { "unit": "short", "decimals": 0, "thresholds": { "mode": "absolute", "steps": [ { "color": "red", "value": null }, { "color": "green", "value": 1 } ] } }, "overrides": [] },
-      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "colorMode": "value", "graphMode": "area" },
-      "targets": [ { "refId": "A", "datasource": { "type": "prometheus", "uid": "fraud-prometheus" }, "expr": "rate(airflow_scheduler_heartbeat[5m]) * 60" } ]
+      "datasource": {
+        "type": "prometheus",
+        "uid": "fraud-prometheus"
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 4,
+        "x": 12,
+        "y": 39
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 1
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "area"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "fraud-prometheus"
+          },
+          "expr": "rate(airflow_scheduler_heartbeat[5m]) * 60"
+        }
+      ]
     },
     {
       "type": "barchart",
       "title": "DAG run 성공/실패 (트리거 날짜별)",
-      "datasource": { "type": "prometheus", "uid": "fraud-prometheus" },
-      "gridPos": { "h": 5, "w": 8, "x": 16, "y": 39 },
-      "fieldConfig": { "defaults": { "unit": "short", "decimals": 0 }, "overrides": [ { "matcher": { "id": "byName", "options": "d_ms" }, "properties": [ { "id": "unit", "value": "time:MM-DD" } ] }, { "matcher": { "id": "byName", "options": "성공" }, "properties": [ { "id": "color", "value": { "mode": "fixed", "fixedColor": "green" } } ] }, { "matcher": { "id": "byName", "options": "실패" }, "properties": [ { "id": "color", "value": { "mode": "fixed", "fixedColor": "red" } } ] } ] },
-      "options": { "orientation": "auto", "showValue": "auto", "stacking": "none", "xField": "d_ms", "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "fraud-prometheus"
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 8,
+        "x": 16,
+        "y": 39
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "d_ms"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "time:MM-DD"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "성공"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "green"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "실패"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "red"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "orientation": "auto",
+        "showValue": "auto",
+        "stacking": "none",
+        "xField": "d_ms",
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
       "targets": [
-        { "refId": "A", "datasource": { "type": "prometheus", "uid": "fraud-prometheus" }, "expr": "fraud_dagrun_success", "instant": true, "format": "table" },
-        { "refId": "B", "datasource": { "type": "prometheus", "uid": "fraud-prometheus" }, "expr": "fraud_dagrun_failed", "instant": true, "format": "table" }
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "fraud-prometheus"
+          },
+          "expr": "fraud_dagrun_success",
+          "instant": true,
+          "format": "table"
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "fraud-prometheus"
+          },
+          "expr": "fraud_dagrun_failed",
+          "instant": true,
+          "format": "table"
+        }
       ],
-      "transformations": [ { "id": "joinByField", "options": { "byField": "d_ms", "mode": "outer" } }, { "id": "convertFieldType", "options": { "conversions": [ { "targetField": "d_ms", "destinationType": "number" } ], "fields": {} } }, { "id": "organize", "options": { "excludeByName": { "Time": true, "Time 1": true, "Time 2": true, "__name__": true, "__name__ 1": true, "__name__ 2": true, "instance": true, "instance 1": true, "instance 2": true, "job": true, "job 1": true, "job 2": true, "exported_job": true, "exported_job 1": true, "exported_job 2": true }, "renameByName": { "Value #A": "성공", "Value #B": "실패" } } } ]
+      "transformations": [
+        {
+          "id": "joinByField",
+          "options": {
+            "byField": "d_ms",
+            "mode": "outer"
+          }
+        },
+        {
+          "id": "convertFieldType",
+          "options": {
+            "conversions": [
+              {
+                "targetField": "d_ms",
+                "destinationType": "number"
+              }
+            ],
+            "fields": {}
+          }
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "Time 1": true,
+              "Time 2": true,
+              "__name__": true,
+              "__name__ 1": true,
+              "__name__ 2": true,
+              "instance": true,
+              "instance 1": true,
+              "instance 2": true,
+              "job": true,
+              "job 1": true,
+              "job 2": true,
+              "exported_job": true,
+              "exported_job 1": true,
+              "exported_job 2": true
+            },
+            "renameByName": {
+              "Value #A": "성공",
+              "Value #B": "실패"
+            }
+          }
+        }
+      ]
     }
   ]
 }
