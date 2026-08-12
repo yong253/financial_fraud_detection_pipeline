@@ -5,8 +5,11 @@
 -- kafka_timestamp는 Kafka Connect SMT(InsertField$Value)가 넣는 epoch millis(INT64) — 실측 후
 -- 다른 타입으로 나오면(예: ISO 문자열) 이 파일의 타입을 맞춰 재생성한다.
 -- uris를 topics/transactions/date=* 로 스코프 → 버킷 루트의 다른 토픽/오브젝트 배제.
--- 재생성: bq.cmd query --use_legacy_sql=false < bigquery/bronze_external_table.sql
-CREATE OR REPLACE EXTERNAL TABLE `financial-pipeline-501007.fraud_bronze.bronze_transactions`
+-- 플레이스홀더는 .env 값으로 치환해서 실행한다(리터럴 프로젝트 ID를 커밋하지 않기 위함).
+-- 재생성: set -a && . ./.env && set +a
+--         envsubst < bigquery/bronze_external_table.sql | bq query --use_legacy_sql=false
+--         (Windows Git Bash 에서 bq 가 Python 스텁에 걸리면 bq.cmd 사용)
+CREATE OR REPLACE EXTERNAL TABLE `${GCP_PROJECT_ID}.${BQ_DATASET_BRONZE}.bronze_transactions`
 (
   step            STRING,
   type            STRING,
@@ -39,6 +42,6 @@ WITH PARTITION COLUMNS (
 )
 OPTIONS (
   format = 'JSON',
-  hive_partition_uri_prefix = 'gs://financial-pipeline-501007-bronze/topics/transactions',
-  uris = ['gs://financial-pipeline-501007-bronze/topics/transactions/date=*']
+  hive_partition_uri_prefix = 'gs://${GCS_BUCKET_BRONZE}/topics/transactions',
+  uris = ['gs://${GCS_BUCKET_BRONZE}/topics/transactions/date=*']
 );

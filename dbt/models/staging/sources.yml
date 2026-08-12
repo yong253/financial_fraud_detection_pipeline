@@ -1,10 +1,12 @@
 version: 2
 
 # Silver 외부테이블(GCS parquet 위 BQ External Table)을 dbt source로 등록.
-# stg_silver_transactions 가 이 source를 참조. env_var 기본값 필수(dbt 렌더 시점).
+# stg_silver_transactions 가 이 source를 참조.
+# GCP_PROJECT_ID는 개인 식별값이라 기본값을 두지 않는다(profiles.yml과 동일 규칙) —
+# compose의 dbt 서비스가 :? 로 이미 필수화했으므로 미주입 상태로 렌더될 일이 없다.
 sources:
   - name: silver
-    database: "{{ env_var('GCP_PROJECT_ID', 'financial-pipeline-501007') }}"
+    database: "{{ env_var('GCP_PROJECT_ID') }}"
     schema: "{{ env_var('BQ_DATASET_SILVER', 'fraud_silver') }}"
     tables:
       - name: silver_transactions

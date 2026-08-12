@@ -4,7 +4,8 @@
   "connector.class": "io.confluent.connect.gcs.GcsSinkConnector",
   "tasks.max": "3",
   "topics": "transactions",
-  "gcs.bucket.name": "financial-pipeline-501007-bronze",
+  "_comment_bucket": "아래 버킷명 플레이스홀더는 connect-init(docker-compose.yml)이 POST 직전 sed로 .env의 GCS_BUCKET_BRONZE 값으로 치환한다 — 개인 버킷명을 커밋하지 않기 위함.",
+  "gcs.bucket.name": "__GCS_BUCKET_BRONZE__",
   "gcs.credentials.path": "/credentials/service_account.json",
 
   "confluent.topic.bootstrap.servers": "kafka1:29092,kafka2:29092,kafka3:29092",

@@ -225,13 +225,20 @@ services:
     depends_on:
       kafka-connect:
         condition: service_healthy
+    environment:
+      # 커넥터 JSON에는 버킷명을 커밋하지 않는다(개인 식별값) — 아래 sed가 POST 직전에 주입.
+      GCS_BUCKET_BRONZE: ${GCS_BUCKET_BRONZE:?.env에 GCS_BUCKET_BRONZE를 설정하세요}
     volumes:
       - ${HOST_PROJECT_DIR:-.}/kafka/connect:/config:ro
     entrypoint: ["/bin/sh", "-c"]
     command:
+      # $$ 는 compose가 아니라 컨테이너 셸이 해석해야 하는 $ 다(compose 변수 치환 회피).
+      # /config 는 :ro 마운트라 치환 결과는 /tmp 로 쓴다.
       - |
+        sed "s|__GCS_BUCKET_BRONZE__|$$GCS_BUCKET_BRONZE|g" \
+          /config/gcs-sink-bronze.json > /tmp/gcs-sink-bronze.json
         curl -sS -X PUT -H "Content-Type: application/json" \
-          --data @/config/gcs-sink-bronze.json \
+          --data @/tmp/gcs-sink-bronze.json \
           http://kafka-connect:8083/connectors/gcs-sink-bronze/config
     networks:
       - fraud-net
