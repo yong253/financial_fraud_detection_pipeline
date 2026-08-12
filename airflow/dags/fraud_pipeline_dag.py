@@ -8,13 +8,15 @@
     (end_date로 한정 — 안 그러면 현재까지 수천 run 생성됨. PaySim=step 1~743 → 정확히 31일.)
   - 실행: BashOperator + `docker compose run --rm` (docker.sock). 잡 컨테이너 마운트는
     절대 호스트경로(HOST_PROJECT_DIR)로 해석되어 docker-out-of-docker 경로 문제 없음.
-  - STEP_EPOCH(step→tx_date 기준시각)는 이 DAG가 단일 출처로 소유하고 spark_silver의
-    `--step-epoch`로 batch_silver 에 전달한다(양쪽 하드코딩 금지).
+  - STEP_EPOCH(step→이벤트일 기준시각)는 이 DAG가 단일 출처로 소유한다. **Spark에는 넘기지
+    않는다** — batch_silver 는 tx_date 를 event_time 에서 직접 파생한다. 이 값이 쓰이는 곳은
+    reconcile 의 Bronze 집계 SQL(step→이벤트일 재계산)뿐이다.
 
-태스크: bronze_sensor → spark_silver({{ds}}) → dbt_run → dbt_test → reconcile
-정합성: reconcile 가 레이어 간 무손실·무중복을 검증 — undetected_fraud(Gold) ==
-  silver is_suspicious(Silver, 누적) 등식으로 Silver→Gold 이동 중 행 유실/중복이 없는지 확인,
-  불일치 시 DAG 실패.
+태스크: bronze_sensor      ─┐
+       upload_spark_code  ─┴→ spark_silver({{ds}}) → dbt_run → dbt_test → reconcile → push_metrics
+       (앞 두 개는 병렬 — 센서가 대기하는 동안 코드 업로드가 끝난다)
+정합성: reconcile 이 Bronze→Silver 무손실·무중복을 검증 — Bronze(품질통과·row_id 유니크)
+  행수 == Silver 행수를 이벤트일별로 대조(tx_date <= ds), 불일치 시 DAG 실패.
 """
 from __future__ import annotations
 
@@ -263,7 +265,7 @@ def _push_metrics(ds: str) -> None:
     """
     import time
 
-    from prometheus_client import CollectorRegistry, Gauge, pushadd_to_gateway
+    from prometheus_client import CollectorRegistry, Gauge, push_to_gateway
 
     # ── 1) 일자별(라벨 d_ms = 날짜 자정 epoch millis) 층별 정합성 ──
     # Silver: 처리 행수 + 사기(isFraud=1) + is_suspicious.
@@ -273,10 +275,6 @@ def _push_metrics(ds: str) -> None:
         f"       COALESCE(SUM(CASE WHEN is_suspicious THEN 1 ELSE 0 END),0) "
         f"FROM {BQ_SILVER} GROUP BY d_ms ORDER BY d_ms"
     )
-    # Gold 미탐지(정합성 등식의 Gold 쪽) — 날짜별.
-    gold_by_ms = dict(_bq_query(
-        f"SELECT UNIX_MILLIS(TIMESTAMP(tx_date)), count(*) FROM {BQ_UNDETECTED} GROUP BY 1"
-    ))
     # Bronze "정상·유니크"(품질통과 + row_id DISTINCT) — `_reconcile`과 동일 헬퍼를 공유한다
     # (SQL을 복사하면 row_id/품질조건 정의가 두 벌로 갈라져 조용히 어긋난다).
     # 여기서는 관측용 Gauge(fraud_by_date_bs_diff)를 위한 값이고, 실패 판정은 `_reconcile` 담당.
@@ -316,8 +314,10 @@ def _push_metrics(ds: str) -> None:
     actual, flagged, tp, fp, fn = (cm[0], cm[1], cm[2], cm[3], cm[4])
     precision = (tp / flagged) if flagged else 0.0   # 탐지한 것 중 진짜 사기 비율
     recall    = (tp / actual) if actual else 0.0      # 실제 사기 중 잡은 비율
-    # 레이어 정합성: Gold 미탐지 건수 == Silver is_suspicious 건수여야 무손실·무중복(reconcile 등식).
-    reconcile_match = 1.0 if undetected_total == fn else 0.0
+    # `fraud_reconcile_match`(Gold 미탐지 == Silver is_suspicious)는 제거했다 —
+    # undetected_fraud 가 Silver 를 is_suspicious 로 걸러 만든 테이블이라 두 값이 구조적으로
+    # 항상 같아(항상 1) 어떤 사고도 잡지 못했다. 실제 정합성은 아래 fraud_run_bs_diff
+    # (Bronze 정상·유니크 − Silver, 독립 SQL 교차검증)가 담당한다.
 
     g_reg = CollectorRegistry()
     Gauge("fraud_undetected_total", "미탐지 사기 누적 총건수(FN)", registry=g_reg).set(undetected_total)
@@ -332,10 +332,6 @@ def _push_metrics(ds: str) -> None:
         "fraud_batch_last_success_timestamp_seconds",
         "마지막 배치 성공 unixtime", registry=g_reg,
     ).set(time.time())
-    Gauge(
-        "fraud_reconcile_match",
-        "레이어 정합성(Gold 미탐지==Silver is_suspicious): 1=정합/0=불일치", registry=g_reg,
-    ).set(reconcile_match)
 
     # 일자별(d_ms) — 처리 행수(추세) + 사기 건수 + 층별 정합성 차이(무결성 시 0).
     d_rows  = Gauge("fraud_by_date_rows", "일자별 Silver 처리 행수", ["d_ms"], registry=g_reg)
@@ -343,19 +339,35 @@ def _push_metrics(ds: str) -> None:
     d_bs    = Gauge("fraud_by_date_bs_diff",
                     "Bronze(정상·유니크) − Silver (Bronze→Silver 무손실·무중복, 0이면 정합)",
                     ["d_ms"], registry=g_reg)
-    d_sg    = Gauge("fraud_by_date_sg_diff",
-                    "Silver is_suspicious − Gold 미탐지 (Silver→Gold 정합, 0이면 정합)",
-                    ["d_ms"], registry=g_reg)
-    bs_max = sg_max = 0
+    # Silver→Gold 차이(sg_diff)는 내보내지 않는다 — undetected_fraud 가 Silver 를
+    # is_suspicious 로 걸러 만든 테이블이라 두 값이 구조적으로 항상 같다(항상 0).
+    # reconcile 에서 같은 이유로 제거한 등식이므로 지표·패널도 함께 제거했다.
+    bs_max = 0
+    run_rows = run_fraud = run_susp = run_bs = 0
+    ds_ms = int(datetime.strptime(ds, "%Y-%m-%d")
+                .replace(tzinfo=timezone.utc).timestamp() * 1000)
     for d_ms, rows, fr, susp in by_date:
         key = str(d_ms)
         bs = int(bronze_by_ms.get(d_ms, 0)) - int(rows or 0)
-        sg = int(susp or 0) - int(gold_by_ms.get(d_ms, 0))
         d_rows.labels(d_ms=key).set(float(rows or 0))
         d_fraud.labels(d_ms=key).set(float(fr or 0))
         d_bs.labels(d_ms=key).set(float(bs))
-        d_sg.labels(d_ms=key).set(float(sg))
-        bs_max = max(bs_max, abs(bs)); sg_max = max(sg_max, abs(sg))
+        bs_max = max(bs_max, abs(bs))
+        if int(d_ms) == ds_ms:          # 이번 run 이 처리한 tx_date
+            run_rows, run_fraud, run_susp, run_bs = int(rows or 0), int(fr or 0), int(susp or 0), bs
+
+    # ── 이번 run(ds) 한 건에 대한 요약 — "어젯밤 배치가 잘 돌았나" 대시보드용 ──
+    # 라벨 없는 단일 게이지라 카디널리티 부담이 없고, 위 루프에서 이미 구한 값을 쓰므로
+    # BigQuery 쿼리도 추가되지 않는다.
+    Gauge("fraud_run_date", "이번 run 이 처리한 tx_date (epoch millis)",
+          registry=g_reg).set(float(ds_ms))
+    Gauge("fraud_run_rows", "이번 run 처리 행수(Silver)", registry=g_reg).set(float(run_rows))
+    Gauge("fraud_run_fraud", "이번 run 사기 건수(isFraud=1)", registry=g_reg).set(float(run_fraud))
+    Gauge("fraud_run_undetected", "이번 run 미탐지 사기(is_suspicious)",
+          registry=g_reg).set(float(run_susp))
+    Gauge("fraud_run_bs_diff",
+          "이번 run 정합성: Bronze(정상·유니크) − Silver (0이면 정합)",
+          registry=g_reg).set(float(run_bs))
 
     # 시간순(tx_hour, epoch millis 라벨) — 거래/사기 별도 추세.
     h_tx    = Gauge("fraud_by_hour_tx", "시간(tx_hour)별 거래 건수", ["ts_ms"], registry=g_reg)
@@ -406,8 +418,9 @@ def _push_metrics(ds: str) -> None:
     print(
         f"[push_metrics] ds={ds} | "
         f"actual={actual} flagged={flagged} tp={tp} fp={fp} fn={fn} "
-        f"precision={precision:.3f} recall={recall:.3f} reconcile_match={reconcile_match:.0f} | "
-        f"bs_diff_max={bs_max} sg_diff_max={sg_max} (0=정합) | "
+        f"precision={precision:.3f} recall={recall:.3f} | "
+        f"run[{ds}] rows={run_rows:,} fraud={run_fraud} undetected={run_susp} bs_diff={run_bs} | "
+        f"bs_diff_max={bs_max} (0=정합) | "
         f"undetected_total={undetected_total} dates={len(by_date)} hours={len(by_hour)} "
         f"types={len(by_type)} mule_accounts={len(mule_accounts)} dagruns={len(dr_seen)}"
     )
@@ -423,8 +436,13 @@ def _push_metrics(ds: str) -> None:
     # 한 번 걸러도 다음 run이 전부 다시 올린다 — 자가 치유된다.
     # 감싸는 범위는 push 호출 한 줄로 좁힌다. 위쪽 BigQuery 집계 실패는 데이터 문제이므로
     # 그대로 실패시켜야 한다.
+    # push_to_gateway(PUT) — pushadd(POST)가 아니다. POST는 **같은 이름의 메트릭만** 덮어써서,
+    # 코드에서 제거한 지표가 Pushgateway에 영원히 남는다(실측: sg_diff 31개·reconcile_match가
+    # 유령으로 남아 대시보드에 계속 노출됨). PUT은 job 그룹 전체를 이 레지스트리로 교체하므로
+    # 제거한 지표가 다음 run에서 자동으로 사라진다. 이 job에 push하는 주체가 여기 하나뿐이라
+    # 그룹 통째 교체가 안전하다.
     try:
-        pushadd_to_gateway(PUSHGATEWAY, job="fraud_pipeline", registry=g_reg)
+        push_to_gateway(PUSHGATEWAY, job="fraud_pipeline", registry=g_reg)
     # 광범위 except은 의도적 — 전송 계층 실패 전부(DNS/연결거부/타임아웃/HTTP)를 흡수한다.
     except Exception as e:
         raise AirflowSkipException(
